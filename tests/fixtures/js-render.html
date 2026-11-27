@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Dashboard</title></head>
+<body>
+<div id="app">Loading…</div>
+<script>
+  document.getElementById('app').innerHTML = '<h1>Dashboard</h1>' +
+    '<p>The dashboard renders on the client. This text only exists after the script runs, ' +
+    'so a curl-only read sees an empty shell and the L1 lane has to take over. ' +
+    'That is the case this fixture proves: the chain must not report a readable page ' +
+    'from L0 here, and must report one from L1 once the content is drawn.</p>' +
+    '<p>Revenue: 42. Inventory: 1,284 units. Open tickets: 7. Uptime: 99.98%.</p>' +
+    '<p><a href="/normal">Report</a> <a href="/doc-403">Docs</a></p>';
+</script>
+</body></html>

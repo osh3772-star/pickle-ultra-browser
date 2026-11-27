@@ -4,7 +4,6 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/pu-config.sh"
-. "$HERE/detect-code.sh"
 command -v node >/dev/null 2>&1 || \
   echo "run.sh: node not found — run pickle-bootstrap.sh first ($PU_TOOLS/node/bin)" >&2
 
@@ -73,6 +72,17 @@ case "${1:-}" in
     rm -f "$STATE/last-used"
     # 데몬이 이미 죽었는데 소켓 파일만 남은 경우까지 정리한다 (리스너 없음 확인 후 삭제).
     sleep 1
+    # The daemon gives Chrome up to 1.5s to flush its profile and itself up to
+    # 4s to exit. Coming back before that leaves a half-dead daemon and a stale
+    # socket that the next call can attach to (measured: the command after a
+    # stop failed with F-NET until the old process was gone).
+    dpid=$(cat "$STATE/cdp-daemon.pid" 2>/dev/null || true)
+    if [ -n "${dpid:-}" ]; then
+      for _ in $(seq 1 50); do
+        [ -d "/proc/$dpid" ] || break
+        sleep 0.1
+      done
+    fi
     if ! python3 -c 'import socket,sys
 s=socket.socket(socket.AF_UNIX)
 try:
@@ -87,7 +97,7 @@ except Exception:
   warm)
     arm_idle
     WARMJS=$(mktemp "$TMPDIR/warm-XXXXXX.js"); WARMERR=$(mktemp "$TMPDIR/warm-XXXXXX.txt")
-    printf 'const t = await taskSpace("pu-warm");\nconst p = await t.newPage();\nawait t.finish({keep: []});\nconsole.log("pu-warm");\n' > "$WARMJS"
+    printf 'const t = await taskSpace("pu-main");\nconst p = await t.acquirePage("read");\nawait t.finish({keep: [p]});\nconsole.log("pu-warm");\n' > "$WARMJS"
     WRC=0
     timeout 30 node "$HERE/cdp-client.mjs" < "$WARMJS" 2> "$WARMERR" || WRC=$?
     if [ $WRC -ne 0 ] && grep -qiE 'daemon\.sock|ECONNREFUSED' "$WARMERR" 2>/dev/null; then
@@ -183,6 +193,50 @@ const __cssp = (el) => {
 };
 JSEOF
 )
+# 페이지 사실 수집기(L1 판정 입력). bin/detect-page.py가 이 JSON으로 판정한다.
+# DOM을 실제로 읽으므로 동적으로 만들어진 비밀번호 입력란도 잡히고, 속성 표기
+# (`type="password"`, `TYPE = 'PASSWORD'` …)에 좌우되지 않는다.
+# 값(value)은 절대 담지 않는다 — 비밀번호가 결과 파일에 남지 않게 하기 위해서다.
+DOMFACTSJS=$(cat <<'JSEOF'
+const __pu_facts = () => {
+  const vis = (el) => {
+    try {
+      if (el.closest('[hidden],[aria-hidden="true"],template')) return false;
+      const s = getComputedStyle(el);
+      if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return false;
+      if (parseFloat(s.opacity || '1') === 0) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return false;
+      return true;
+    } catch (e) { return false; }
+  };
+  const txt = document.body ? (document.body.innerText || '') : '';
+  const pws = [];
+  for (const el of document.querySelectorAll('input')) {
+    const t = String(el.type || '').toLowerCase();
+    const ac = String(el.getAttribute('autocomplete') || '').toLowerCase();
+    if (t !== 'password' && ac !== 'current-password' && ac !== 'new-password') continue;
+    pws.push({ visible: vis(el), inForm: !!el.form, type: t, autocomplete: ac,
+      name: String(el.getAttribute('name') || el.id || '').slice(0, 40), disabled: !!el.disabled });
+  }
+  const html = (document.documentElement ? document.documentElement.outerHTML : '').slice(0, 400000).toLowerCase();
+  const MARKERS = ['challenge-platform', 'cf_chl_opt', 'cf-chl-', 'cf-browser-verification',
+    'cf-turnstile', 'challenges.cloudflare.com', '_cf_chl_', 'hcaptcha.com', 'h-captcha',
+    'g-recaptcha', 'recaptcha/api.js', 'px-captcha', 'perimeterx', 'datadome',
+    'captcha-delivery', '_incapsula_resource', 'sgcaptcha',
+    'cf-error-details', 'cf-error-code', 'error code: 1020', 'error code: 1015',
+    'cloudflare ray id', 'cf-wrapper'];
+  const markers = MARKERS.filter((m) => html.indexOf(m) >= 0);
+  return { url: location.href, title: document.title, text: txt.slice(0, 20000),
+    textChars: txt.trim().length, links: document.querySelectorAll('body a[href]').length,
+    forms: document.forms.length, blocks: document.querySelectorAll('p,h2,h3,h4,li,article,section,td').length,
+    passwords: pws, markers };
+};
+JSEOF
+)
+code_of() { python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("code") or "-")
+except Exception: print("-")'; }
 SETTLE_MS=${PU_SETTLE_MS:-4000}
 [ "${PU_SETTLE:-}" = "0" ] && SETTLE_MS=0
 
@@ -195,7 +249,8 @@ if [ "${1:-}" = "open" ] || [ "${1:-}" = "read" ]; then
   TMPJS=$(mktemp "$TMPDIR/pu-XXXXXX.js")
   RAW=$(mktemp "$TMPDIR/pu-raw-XXXXXX.txt")
   OUT=$(mktemp "$TMPDIR/pu-out-XXXXXX.txt")
-  trap 'rm -f "$TMPJS" "$RAW" "$OUT"' EXIT
+  PROBE=$(mktemp "$TMPDIR/pu-probe-XXXXXX.json")
+  trap 'rm -f "$TMPJS" "$RAW" "$OUT" "$PROBE"' EXIT
   if [ "$MODE" = "open" ] && [ "${PU_MARKS:-1}" != "0" ]; then
     MARKJS=$(cat <<JSEOF
   try {
@@ -220,16 +275,20 @@ JSEOF
   run_attempt() { # snapcall trimmode -> $OUT
     local snapcall="$1" trim="$2" rc=0
     cat > "$TMPJS" <<EOF
-let t;
+const __fs0 = await import('node:fs');
+let t = null;
+let __page = null;
 try {
-  t = await taskSpace("ub" + Date.now());
-  const p = await t.newPage();
+  t = await taskSpace("pu-main");
+  const p = __page = await t.acquirePage("read");   // warm tab reuse — see cdp-daemon acquirePage()
 $UAJS
 $(navjs "$URLJSON" "$SETTLE_MS")
+$DOMFACTSJS
+  try { __fs0.writeFileSync($(jstr "$PROBE"), JSON.stringify(await p.evaluate(__pu_facts))); } catch (e) {}
   console.log($snapcall);
 $MARKJS
 } finally {
-  if (t) { try { await t.finish({keep: []}); } catch (e) {} }
+  if (t) { try { await t.finish({keep: [__page]}); } catch (e) {} }
 }
 EOF
     run_client "$TMPJS" > "$RAW" || rc=$?
@@ -260,8 +319,27 @@ EOF
     result_line "$MODE" fail "$CODE" 0 none
     exit 1
   fi
-  CODE=$(pu_detect_code "$OUT")
-  [ "$CODE" = "-" ] && CODE=$(pu_detect_auth "$OUT" "$CHARS")
+  # 대상에 닿지 못하면 Chrome은 자체 오류 페이지를 띄운다. 그 텍스트를 본문으로
+  # 돌려주면 "성공했지만 내용이 이상한" 결과가 되므로(실측: 닫힌 포트에서
+  # 167자짜리 오류 페이지를 status=ok로 보고) 여기서 F-NET으로 끊는다.
+  if [ -s "$PROBE" ]; then
+    FINALURL=$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("url") or "")
+except Exception: print("")' "$PROBE")
+    case "$FINALURL" in
+      chrome-error:*) [ "${PU_DEBUG:-}" = 1 ] && cat "$OUT" >&2
+        result_line "$MODE" fail F-NET 0 none "url=$FINALURL"; exit 1 ;;
+    esac
+  fi
+
+  # L1 판정은 DOM 사실(동적 입력란·실제 표시 여부 포함)로 한다. 사실 수집이
+  # 실패했을 때만 스냅샷 텍스트 판정으로 물러난다.
+  if [ -s "$PROBE" ]; then
+    CODE=$(python3 "$HERE/detect-page.py" --mode l1 --dom "$PROBE" | code_of)
+  else
+    CODE=$(python3 "$HERE/detect-page.py" --mode text --text-file "$OUT" | code_of)
+  fi
+  [ "$CODE" = "F-EMPTY" ] && CODE=-
   if [ "$CODE" != "-" ]; then
     [ "${PU_DEBUG:-}" = "1" ] && cat "$OUT" >&2
     result_line "$MODE" fail "$CODE" "$CHARS" "$(next_for_code "$CODE")"; exit 1
@@ -283,13 +361,16 @@ case "${1:-}" in
     URL=${1:?usage: run.sh $ACT <url> ...}; shift
     arm_idle
     URLJSON=$(jstr "$URL")
-    PROBE=$(mktemp "$TMPDIR/probe-XXXXXX.txt")
+    PROBE=$(mktemp "$TMPDIR/probe-XXXXXX.json")
     META=$(mktemp "$TMPDIR/meta-XXXXXX.json")
     ITEMS=$(mktemp "$TMPDIR/items-XXXXXX.json")
     TMPJS=$(mktemp "$TMPDIR/act-XXXXXX.js")
     RAW=$(mktemp "$TMPDIR/act-raw-XXXXXX.txt")
     OUTPNG=''
-    trap 'rm -f "$PROBE" "$META" "$ITEMS" "$TMPJS" "$RAW" $OUTPNG' EXIT
+    # OUTPNG is the caller's file, not a temp: it must survive the exit.
+    # (It used to be in this rm list, so `run.sh shot` reported the byte count
+    # of a file it then deleted — found by tests/test-browser-features.sh.)
+    trap 'rm -f "$PROBE" "$META" "$ITEMS" "$TMPJS" "$RAW"' EXIT
     ACTIONJS=''
     case "$ACT" in
       click)
@@ -324,10 +405,10 @@ JSEOF
     const e = /^e\\d+$/.test(t) ? document.querySelector('[data-pu-id="' + t + '"]') : document.querySelector(t);
     if (!e) return null;
     e.scrollIntoView({ block: 'center' });
-    return { type: (e.getAttribute('type') || '').toLowerCase(), tagId: e.getAttribute('data-pu-id') || null };
+    return { type: String(e.type || '').toLowerCase(), ac: String(e.getAttribute('autocomplete') || '').toLowerCase(), tagId: e.getAttribute('data-pu-id') || null };
   }, ${REFJSON});
   if (!__f) { __MISSING__ = 'selector_not_found'; }
-  else if (__f.type === 'password') { __EXTRA__.refused = 'password_field'; }
+  else if (__f.type === 'password' || __f.ac === 'current-password' || __f.ac === 'new-password') { __EXTRA__.refused = 'password_field'; }
   else {
     await p.type(/^e\\d+$/.test(${REFJSON}) ? ${REFJSON} : { selector: ${REFJSON} }, ${TEXTJSON}, { clear: true });
     await new Promise(r => setTimeout(r, 300));
@@ -397,33 +478,29 @@ JSEOF
     esac
 
     cat > "$TMPJS" <<EOF
-let t;
+let t = null;
+let __page = null;
 let __EXTRA__ = {};
 let __MISSING__ = null;
 const __fs = await import('node:fs');
 try {
-  t = await taskSpace("ub" + Date.now());
-  const p = await t.newPage();
+  t = await taskSpace("pu-main");
+  const p = __page = await t.acquirePage("act");   // warm tab reuse — see cdp-daemon acquirePage()
 $UAJS
 $(navjs "$URLJSON" "$SETTLE_MS")
 $ACTIONJS
   let __pr = null;
   try {
-    __pr = await p.evaluate(() => {
-      const b = document.body ? (document.body.innerText || '') : '';
-      const h = document.documentElement ? document.documentElement.outerHTML : '';
-      return { url: location.href, title: document.title, chars: b.trim().length,
-        pw: !!document.querySelector('input[type="password"]'),
-        head: (document.title + '\n' + h.slice(0, 6000)) };
-    });
+$DOMFACTSJS
+    __pr = await p.evaluate(__pu_facts);
   } catch (e) { __pr = null; }
   const __meta = __pr
-    ? Object.assign({ url: __pr.url, title: __pr.title, chars: __pr.chars, pw: __pr.pw }, __EXTRA__, __MISSING__ ? { missing: __MISSING__ } : {})
+    ? Object.assign({ url: __pr.url, title: __pr.title, chars: __pr.textChars, pw: (__pr.passwords || []).length > 0 }, __EXTRA__, __MISSING__ ? { missing: __MISSING__ } : {})
     : Object.assign({ url: '', title: '', chars: 0, pw: false }, __EXTRA__, __MISSING__ ? { missing: __MISSING__ } : {});
-  if (__pr) __fs.writeFileSync($(jstr "$PROBE"), __pr.head);
+  if (__pr) __fs.writeFileSync($(jstr "$PROBE"), JSON.stringify(__pr));
   __fs.writeFileSync($(jstr "$META"), JSON.stringify(__meta));
 } finally {
-  if (t) { try { await t.finish({keep: []}); } catch (e) {} }
+  if (t) { try { await t.finish({keep: [__page]}); } catch (e) {} }
 }
 EOF
     RC=0; run_client "$TMPJS" > "$RAW" || RC=$?
@@ -438,8 +515,12 @@ EOF
     case "$FINALURL" in chrome-error:*) echo "run.sh: 브라우저 오류 페이지 (대상 없음/연결 실패)" >&2; result_line "$ACT" fail F-NET 0 none "url=$FINALURL"; exit 1 ;; esac
     MISSING=$(jget "$META" missing)
     REFUSED=$(jget "$META" refused)
-    CODE=$(pu_detect_code "$PROBE")
-    [ "$CODE" = "-" ] && CODE=$(pu_detect_auth "$PROBE" "$NCHARS")
+    if [ -s "$PROBE" ]; then
+      CODE=$(python3 "$HERE/detect-page.py" --mode l1 --dom "$PROBE" | code_of)
+    else
+      CODE="-"
+    fi
+    [ "$CODE" = "F-EMPTY" ] && CODE=-
     if [ -n "$REFUSED" ]; then
       echo "run.sh: 비밀번호 필드는 이 빌드가 채우지 않는다 — 내장 브라우저 + vault 몫" >&2
       result_line "$ACT" fail F-AUTH "$NCHARS" builtin-browser-vault "url=$FINALURL"

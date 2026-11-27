@@ -39,6 +39,7 @@ location is fixed, replace this line and nothing else. Everything below uses `$R
 | curl | `curl --version` | `pickle-bootstrap.sh` cannot run without it: install or stop |
 | git | `git --version` | needed only to clone (step 2) |
 | Chromium | resolved in step 3 | — |
+| sandbox support (optional) | `cat /proc/sys/kernel/unprivileged_userns_clone` (Linux) | without it the daemon launches `--no-sandbox` and warns; `PU_CHROME_SANDBOX=require` refuses instead |
 
 No root and no `sudo` are required. Chromium's missing shared libraries
 (`libnss3`, `libnspr4`, …) are fetched as Debian `.deb` files and extracted into the tree
@@ -60,10 +61,26 @@ Never install into a shared or world-writable directory.
 bash pickle-bootstrap.sh
 ```
 
-It does, in order: Node 22 tarball into `.tools/node` (skipped if `node` ≥ 22 is already
-on `PATH`), Playwright Chromium into the Playwright cache, missing Chromium shared libraries
-into `.tools/chrome-deps/lib`, `mawk` when the image has no `awk`, `config.env` from
-`config.env.example` when absent, then a warm-up and a read of `https://example.com`.
+It does, in order:
+
+1. **Node, pinned** (`NODE_VER`, default `v22.23.5`) into `.tools/node`, for the platform it
+   detects (`Linux x86_64/arm64`, `macOS x86_64/arm64`; anything else stops with exit 2 before
+   changing anything). The tarball is cached, resumed after an interruption, and
+   **verified against nodejs.org's `SHASUMS256.txt`**; a mismatch stops the run with exit 3
+   and installs nothing.
+2. **Playwright Chromium, pinned** (`PLAYWRIGHT_VERSION=1.65.1`, browser revision 1255) into
+   the Playwright cache. Playwright publishes no checksum for the browser archive, so the
+   pin plus a post-install "does it run" check is what this build can offer; set
+   `PU_CHROMIUM_SHA256=<hex>` to make it strict (the run prints the hash it found).
+3. Missing Chromium shared libraries into `.tools/chrome-deps/lib`, each `.deb` verified
+   against the **SHA256 in the Debian `Packages` index** before extraction.
+4. `mawk` when the image has no `awk`.
+5. `config.env` from `config.env.example` **only when absent**, then a warm-up and a read of
+   `https://example.com`.
+
+Nothing the user owns is touched: an existing `config.env`, `.state/` (profile and cookies),
+`.tmp/` and `agent-vault/` survive a re-run, so updating keeps the signed-in profile and the
+filled vault. Re-running is safe at any point.
 
 If Chromium is already installed elsewhere, point at it instead:
 
@@ -230,15 +247,47 @@ bash bin/selftest.sh
 echo "exit=$?"
 ```
 
-**Pass:** exit `0` and `selftest: PASS=3 FAIL=0 SKIP=0`:
+**Pass:** exit `0` and `selftest: PASS=23 FAIL=0 SKIP=0` with Chromium installed
+(`PASS=18 FAIL=0 SKIP=5` when it is not — the five cases that need the browser are skipped,
+not passed). The selftest starts `tests/http-server.mjs` on
+localhost — real status codes, a JS-rendered page, login walls, a redirect — because
+`file://` URLs make curl answer `000` and cannot exercise a lane honestly.
 
-| case | expected exit | expected verdict |
+| case | exit | verdict |
 |---|---|---|
-| `normal` | 0 | `code=-` `next=none` |
-| `blocked` | 3 | `code=F-BOT` `next=builtin-browser` |
-| `login` | 4 | `code=F-AUTH` `next=builtin-browser-vault` |
+| `normal`, `normal-ko`, `redirect` | 0 | `-` / `next=none` |
+| `doc-about-403(-ko/-ja)` — long documents that discuss blocks | 0 | `-` (this is the false-positive regression) |
+| `public-login-link`, `public-login-box` — public pages with a sign-in link/hidden modal | 0 | `-` |
+| `http-403`, `http-429`, `block-ko`, `block-ja` | 3 | `F-IP` / `next=builtin-browser` |
+| `challenge`, `challenge-ja` | 3 | `F-BOT` |
+| `http-500` (L0 / chain) | 1 / 3 | `F-NET`, then `F-EMPTY` after L1 |
+| `login-wall`, `login-attrs`, `login-ja` (attribute spellings) | 4 | `F-AUTH` / `next=builtin-browser-vault` |
+| `js-rendered` | 0 | `path=L0:F-EMPTY>L1:ok` |
+| `dynamic-login` (password field created after load) | 4 | `F-AUTH` |
+| `empty-shell` | 3 | `F-EMPTY` |
+| `type-password` (CLI refuses, secret not echoed) | 1 | `F-AUTH` |
 
-`SKIP` for `blocked` means Chromium was not found — go back to step 3.
+`SKIP` means no Chromium — go back to step 3. A skipped case is not a pass.
+
+`bash tests/run-tests.sh` runs this plus the unit, vault, bootstrap, sandbox, thread-growth
+and browser-feature suites.
+
+### 6.3b What `next=` can say (read this before wiring an agent)
+
+Every command ends with one line whose last field is `next=`. The calling agent decides;
+nothing switches browsers automatically.
+
+| `next=` | exit | meaning for the caller |
+|---|---|---|
+| `none` | 0 / 1 | use the result / stop (transport failure, selector miss) |
+| `builtin-browser` | 3 | blocked or empty — read it in your own browser tool |
+| `builtin-browser-vault` | 4 | login wall and **no** credential in the vault for this host — your browser + `browser_fill_secret` |
+| `ultra-vault` | 5 | login wall **and** `agent-vault` holds a credential for this host (the line also carries `vault=<entry>`) — continue here: drive the login with an L1 `-f` script that gets the value from `python3 agent-vault/vault.py use <entry> -- …` |
+
+The vault check reads metadata only (`vault.py list`: name, purpose, stored date) and matches
+the host, the host without `www.`, and its registrable parent (`shop.example.co.kr` →
+`example.co.kr`). A host in `AUTH_SKIP_HOSTS` is no longer skipped when a credential exists:
+the lanes run first, because the profile may already hold a live session.
 
 ### 6.4 The intake round trip (whichever path step 5 chose)
 

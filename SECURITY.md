@@ -24,8 +24,14 @@ Related: [README](README.md) · [INSTALL](INSTALL.md) · [NOTICE-TO-USER](NOTICE
 
 ## What this harness will not do
 
-- It does not fill password fields: `run.sh type` on `input[type=password]` returns
-  `code=F-AUTH next=builtin-browser-vault` and changes nothing.
+- It does not fill password fields: `run.sh type` on a password field returns
+  `code=F-AUTH next=builtin-browser-vault` and changes nothing. The guard is in the
+  browser layer too (`p.type`, `p.typeText`, `p.press` all refuse when the target is a
+  password field), so a `-f` script cannot bypass the CLI check, and the typed text never
+  appears in an error or a log.
+- It does not switch browsers by itself: `next=` is a signal for the calling agent. When the
+  vault already holds a credential for the host, the login wall reports `next=ultra-vault`
+  (exit 5) instead — the caller continues here with `vault.py use`.
 - It does not sign in, pay, solve CAPTCHAs, or bypass bot walls. A `F-BOT`/`F-IP` verdict is
   the honest answer for a datacenter egress IP.
 - It does not touch the user's own browser profile. Its profile is `<tree>/.state/profile`.
@@ -48,6 +54,25 @@ moves it — in a Google Sheet, or in the form file the user filled in on their 
 - The sheet never receives a value from this harness — only the user types into column C. The
   same goes for the file: only the user fills the password column, and the filled file comes
   back as a chat attachment, never as text in the conversation.
+
+## The browser process and its files
+
+- Chromium runs from the Playwright cache with the profile in `.state/profile` (0700).
+  The Unix socket that drives it is `.state/cdp-daemon.sock`, mode **0600**: anything that
+  can connect to it can run arbitrary JS in the browser as this user, so it must not be
+  reachable by another local account. The state directory is 0700, the PID file 0600.
+- **Sandbox**: `PU_CHROME_SANDBOX=auto` (default) enables Chromium's sandbox when this host
+  can run it (user namespaces on Linux, a root-owned setuid `chrome_sandbox`, or macOS
+  seatbelt). Where it cannot, the daemon launches with `--no-sandbox` and warns on stderr
+  and in `cdp-daemon.log` — inside a page that means page scripts run with this user's
+  rights, which is why it is stated rather than hidden. `require` refuses to launch;
+  `off` accepts it silently. Do not use `require` in a container without namespaces and
+  expect the browser to work.
+- **Downloads from the installer**: the Node tarball is verified against nodejs.org's
+  `SHASUMS256.txt`; Debian `.deb` files are verified against the SHA256 in the `Packages`
+  index. Playwright publishes no checksum for the browser archive — pin the version
+  (`PLAYWRIGHT_VERSION`) and, if you have recorded the hash once,
+  set `PU_CHROMIUM_SHA256` to make it strict.
 
 ## Reporting
 

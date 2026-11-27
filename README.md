@@ -28,11 +28,29 @@ to its user right away.
 
   `next=` is the whole contract: `none` (use the result), `builtin-browser`
   (blocked or empty — hand the URL to the host agent's own browser),
-  `builtin-browser-vault` (login or checkout — the host agent's browser plus its
-  secret-filling tool).
+  `builtin-browser-vault` (login or checkout, and the vault has **no** credential
+  for that host — the host agent's browser plus its secret-filling tool), or
+  `ultra-vault` (login wall, but `agent-vault` already holds a credential for that
+  host — the calling agent continues **in this harness**: log in with
+  `agent-vault/vault.py use` through an L1 `-f` script instead of switching
+  browsers). Exit codes: `0` ok, `3` browser hand-over, `4` vault hand-over,
+  `5` ultra-vault hand-over, `1` failed.
+
+  `next=` is a *signal to the calling agent*, never an automatic switch: nothing
+  in this tree can call the host agent's browser tools, and it does not try.
 - **Three lanes** (`bin/chain.sh`): L0 is curl + stdlib HTML→text (about a second, no
   browser). L1 is the raw-CDP read. There is deliberately no L2: when L1 is blocked the
   harness reports it and stops.
+- **One verdict engine** (`bin/detect-page.py`) for both lanes. It scores independent
+  evidence — HTTP status, `<title>`, challenge/block markers, page structure, and (in L1)
+  the real DOM — instead of grepping the body. A long document that *discusses* "Access
+  denied" stays readable; a single keyword never confirms a block. A password field is
+  found by parsing attributes (any quoting, any case) at L0 and by reading the DOM at L1,
+  so a field created after load is caught too, and one hidden inside a modal or
+  `<template>` does not turn a public page into a login wall.
+- **Warm-tab reuse**: `read`/`open`/actions reuse one tab per purpose instead of opening a
+  new one per call. That is what keeps a long-lived daemon inside a small container's
+  thread budget (measured: 12 reads in a row stay flat instead of adding ~12 threads each).
 - **Encrypted credential vault** (`agent-vault/`): values are stored Fernet-encrypted and never
   printed. **Automatic intake** — the user fills a private Google Sheet, or a form file sent
   back in chat — is an optional plugin under `extensions/vault-intake/`; see
@@ -92,7 +110,7 @@ The intake bundles still use this tree's `agent-vault/vault.py`, `gog` and `.sh`
 | `F-BOT` | human-check page (Managed Challenge, Turnstile, "Just a moment") | `builtin-browser` |
 | `F-IP` | IP/region block (403, 429, "Access denied", error 1020) | `builtin-browser` |
 | `F-EMPTY` | body under 100 characters | `builtin-browser` |
-| `F-AUTH` | login wall / password field / checkout entry point | `builtin-browser-vault` |
+| `F-AUTH` | login wall / password field / checkout entry point | `builtin-browser-vault`, or `ultra-vault` (exit 5) when the vault holds a credential for the host |
 | `F-TIMEOUT`, `F-NET` | the page never answered | `none` (retry or hand over) |
 | `F-SELECTOR` | the ref or CSS selector matched nothing | `none` |
 
@@ -140,9 +158,10 @@ overridable with `PU_CONFIG_DIR`):
 ## Layout
 
 ```
-bin/          run.sh chain.sh fetch.sh detect-code.sh doctor.sh selftest.sh
+bin/          run.sh chain.sh fetch.sh detect-page.py detect-code.sh doctor.sh selftest.sh
               cdp-daemon.mjs cdp-client.mjs snaptrim.py html2text.py routecache.py
-              batch.sh chrome-wrapper.sh pu-config.sh pu-config.mjs idle-stop.sh
+              vault-match.py batch.sh chrome-wrapper.sh pu-config.sh pu-config.mjs idle-stop.sh
+tests/        HTTP fixture server, fixture pages and the suites (run-tests.sh runs them all)
 agent-vault/  vault.py (encrypted store; keys/ and entries/ are gitignored)
 extensions/   vault-intake/  optional: automatic intake (Sheet or file), + selftest-intake.sh
 vendor/       fetch_chrome_deps.py (Chromium shared libraries, no root)
@@ -161,6 +180,15 @@ Install configuration (sheet id, agent name) lives in
 
 - Datacenter egress: Cloudflare Managed Challenge and many bot walls cannot be passed.
   Reported honestly as `F-BOT`/`F-IP`.
+- **Chromium sandbox**: the flag follows the host. `PU_CHROME_SANDBOX=auto` (default) uses
+  the sandbox when user namespaces (or a setuid `chrome_sandbox`, or macOS seatbelt) are
+  available, and otherwise launches with `--no-sandbox` **and says so** on stderr and in
+  `cdp-daemon.log`. `require` refuses to launch instead; `off` accepts the risk silently.
+  In a container without user namespaces the sandbox genuinely cannot start, so the
+  fallback is the only way to run at all — but it is never silent.
+- `.state/route-cache.json` is a **diagnostic record only** (`bin/routecache.py`): it stores
+  what L1 saw, per domain, for debugging. The chain never reads it to skip a lane — a
+  challenge is per path/session/edge and skipping would block working pages.
 - Settling is time-based (`PU_SETTLE_MS`, default 4000) — there is no condition wait.
 - Viewport screenshots only; no element screenshots, no PDF, no hand-over to a human.
 - Reads are anonymous. Anything behind a login belongs to the host agent's browser.

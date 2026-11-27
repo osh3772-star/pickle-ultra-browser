@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>로그인</title></head>
+<body>
+<div id="app">불러오는 중…</div>
+<script>
+  setTimeout(() => {
+    document.getElementById('app').innerHTML =
+      '<h1>로그인이 필요합니다</h1><p>아이디와 비밀번호를 입력해 주세요.</p>' +
+      '<form><input name="id"><input type="password" name="pw" autocomplete="current-password">' +
+      '<button>로그인</button></form>';
+  }, 50);
+</script>
+</body></html>

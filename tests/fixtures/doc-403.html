@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>A guide to fixing Access denied errors in the admin console</title>
+<meta name="description" content="Step-by-step guide for access denied errors"></head>
+<body>
+<nav><a href="/">Home</a> <a href="/docs">Docs</a> <a href="/support">Support</a> <a href="/status">Status</a> <a href="/blog">Blog</a> <a href="/login">Sign in</a></nav>
+<main>
+<h1>A guide to fixing Access denied errors in the admin console</h1>
+<p>If the admin console answers with "Access denied", the cause is almost always
+one of four things: the account is missing the role the page requires, the
+session expired while the tab was idle, the request came from an address your
+organisation has not allowlisted, or a proxy in front of the console stripped
+the authentication header. This guide goes through each cause in turn and shows
+the exact screen where you can confirm it.</p>
+<h2>1. Check the role on the account</h2>
+<p>Open Settings, then Members, and read the Role column. A member with the
+Viewer role can open every page in the console except the ones that change
+billing or delete data; those answer with "Access denied" on purpose. If the
+person needs them, change the role to Editor and ask them to reload. The change
+takes effect immediately and does not require a new sign-in.</p>
+<h2>2. Check the session</h2>
+<p>A session that has been idle for more than eight hours is closed. The next
+request is answered with "Access denied" rather than a redirect, because the
+console cannot tell an expired cookie from a missing one. Signing in again in
+the same tab restores the page; nothing is lost because the form state is kept
+in local storage.</p>
+<h2>3. Check the allowlist</h2>
+<p>Requests from outside your office ranges are refused with "Access denied"
+and a Ray ID in the response header. Copy that Ray ID into the support form and
+support can tell you which rule refused the request. This is the same code
+Cloudflare reports as error 1020 when a WAF rule blocks a request, so the two
+screens look alike: read the heading, not just the words.</p>
+<h2>4. Check proxies and extensions</h2>
+<p>Some corporate proxies remove the Authorization header. The console then
+sees an anonymous request and answers "Access denied". Loading the console from
+a different network is the quickest way to tell this case apart from the
+others.</p>
+<h2>Still stuck?</h2>
+<p>Send the Ray ID, the page address and the time of the request to support.
+Please do not paste your password or a session cookie into a ticket; support
+never needs either of them to look at a refusal, and a ticket is the last place
+they should be written down.</p>
+</main>
+<footer><p>Documentation for the admin console · updated 2026-11-20 · 9 min read</p></footer>
+</body></html>

@@ -23,9 +23,19 @@ import subprocess
 import sys
 from datetime import datetime
 
-from cryptography.fernet import Fernet, InvalidToken
+def _fernet():
+    """Import cryptography only where a value is encrypted or decrypted.
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+    `list` (and every metadata-only caller, e.g. bin/vault-match.py from
+    chain.sh) then costs ~12 ms instead of ~55 ms, and the vault still works
+    the same way. Nothing about the format or the key changes.
+    """
+    from cryptography.fernet import Fernet, InvalidToken
+    return Fernet, InvalidToken
+
+# PU_VAULT_DIR lets a deployment (or the test suite) keep the store outside the
+# tree. It never changes the format or the permission rules.
+BASE = os.environ.get("PU_VAULT_DIR") or os.path.dirname(os.path.abspath(__file__))
 KEY_PATH = os.path.join(BASE, "keys", "vault.key")
 ENTRY_DIR = os.path.join(BASE, "entries")
 META_PATH = os.path.join(BASE, "meta.json")
@@ -126,6 +136,7 @@ def cmd_init(_args):
     if os.path.exists(KEY_PATH):
         print("already initialized (key exists; left untouched)")
         return 0
+    Fernet, _ = _fernet()
     _write_private(KEY_PATH, Fernet.generate_key())
     print("initialized: key created (0600), entries dir ready, vault is empty")
     return 0
@@ -154,6 +165,7 @@ def cmd_store(args):
     value = bytearray(_read_incoming(args))
     if not value:
         raise VaultError("empty value; nothing stored")
+    Fernet, _ = _fernet()
     token = Fernet(key).encrypt(bytes(value))
     for i in range(len(value)):
         value[i] = 0
@@ -180,6 +192,7 @@ def _decrypt(name: str) -> bytearray:
     except OSError:
         raise VaultError(f"no such entry: {name}")
     try:
+        Fernet, InvalidToken = _fernet()
         return bytearray(Fernet(key).decrypt(token))
     except InvalidToken:
         raise VaultError("decryption failed (key mismatch or corrupted entry)")

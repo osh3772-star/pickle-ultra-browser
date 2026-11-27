@@ -30,7 +30,7 @@
 //   -> {type:"stop"}               <- {type:"done", code:0} then daemon exits
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdirSync, writeFileSync, rmSync, openSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, openSync, existsSync, readdirSync, statSync, chmodSync, readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import util from 'node:util';
@@ -47,8 +47,61 @@ const HEADLESS = process.env.PICKLE_ULTRA_HEADLESS !== '0';
 const EPHEMERAL = process.env.PICKLE_ULTRA_EPHEMERAL === '1';
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
-mkdirSync(STATE_DIR, { recursive: true });
-writeFileSync(PIDFILE, String(process.pid));
+mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+try { chmodSync(STATE_DIR, 0o700); } catch {}
+writeFileSync(PIDFILE, String(process.pid), { mode: 0o600 });
+try { chmodSync(PIDFILE, 0o600); } catch {}
+
+// ---------------------------------------------------------------- sandbox
+// Chromium's sandbox needs either user namespaces (Linux), a setuid
+// chrome_sandbox, or macOS seatbelt. In a container that disables user
+// namespaces it cannot start at all, so the old build hard-coded
+// --no-sandbox for everyone. That hid the trade-off instead of stating it:
+// every page this daemon visits then runs with the host user's full rights.
+//
+// Now the flag follows the environment, and the choice is always visible:
+//   PU_CHROME_SANDBOX=auto     (default) use the sandbox when this host can
+//                              run it; otherwise run without it and say so
+//   PU_CHROME_SANDBOX=require  refuse to launch unless the sandbox works
+//   PU_CHROME_SANDBOX=off      run without it deliberately (no warning loop)
+// The risky mode is never silently the default.
+function sandboxSupport() {
+  const mode = String(process.env.PU_CHROME_SANDBOX || 'auto').toLowerCase();
+  if (mode === 'off') return { mode, usable: false, why: 'PU_CHROME_SANDBOX=off' };
+  if (process.platform === 'darwin') return { mode, usable: true, why: 'macOS seatbelt' };
+  if (process.platform !== 'linux') return { mode, usable: false, why: 'no Chromium sandbox on ' + process.platform };
+  const rd = (p) => { try { return readFileSync(p, 'utf8').trim(); } catch { return ''; } };
+  const usernsClone = rd('/proc/sys/kernel/unprivileged_userns_clone');   // Debian/Ubuntu
+  const maxNs = rd('/proc/sys/user/max_user_namespaces');                 // most kernels
+  const apparmor = rd('/proc/sys/kernel/apparmor_restrict_unprivileged_userns');
+  if (usernsClone === '0') return { mode, usable: false, why: 'unprivileged_userns_clone=0' };
+  if (maxNs === '0') return { mode, usable: false, why: 'max_user_namespaces=0' };
+  if (apparmor === '2') return { mode, usable: false, why: 'apparmor_restrict_unprivileged_userns=2' };
+  // A root-owned setuid helper also works (Chrome's own sandbox binary).
+  const cands = [];
+  for (const c of [process.env.PICKLE_ULTRA_CHROME, process.env.CHROME_BIN]) if (c) cands.push(c);
+  try {
+    const root = join(homedir(), '.cache', 'ms-playwright');
+    for (const d of readdirSync(root)) if (d.startsWith('chromium-')) cands.push(join(root, d, 'chrome-linux64', 'chrome'));
+  } catch {}
+  for (const c of cands) {
+    try {
+      const st = statSync(join(join(c, '..'), 'chrome_sandbox'));
+      if (st.uid === 0 && (st.mode & 0o4000)) return { mode, usable: true, why: 'setuid chrome_sandbox' };
+    } catch {}
+  }
+  const uid = process.getuid ? process.getuid() : -1;
+  if (uid === 0) return { mode, usable: false, why: 'running as root without a setuid sandbox' };
+  if (usernsClone === '1' || Number(maxNs) > 0) {
+    return { mode, usable: true, why: 'user namespaces available' };
+  }
+  if (usernsClone === '' && maxNs === '') {
+    // No sysctl to read (unusual kernel): we cannot tell, so we let Chromium
+    // decide. If it fails, the error names cdp-chrome.log.
+    return { mode, usable: true, why: 'no namespace sysctl — assuming available' };
+  }
+  return { mode, usable: false, why: 'user namespaces unavailable' };
+}
 
 // ---------------------------------------------------------------- Chrome/CDP
 let chromeProc = null;
@@ -219,16 +272,34 @@ async function launchChrome() {
     } catch (e) { if (e.message !== 'busy') { chromePort = p; break; } }
   }
   if (!chromePort) chromePort = candidates[0];
+  const sb = sandboxSupport();
   const args = [
     `--remote-debugging-port=${chromePort}`, '--remote-debugging-address=127.0.0.1',
     `--user-data-dir=${PROFILE}`,
     '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage',
-    '--no-sandbox', '--disable-setuid-sandbox', '--mute-audio',
+    ...(sb.usable ? [] : ['--no-sandbox', '--disable-setuid-sandbox']),
+    '--mute-audio',
     '--disable-blink-features=AutomationControlled',
     ...(HEADLESS ? ['--headless=new', '--hide-scrollbars', '--window-size=1280,800'] : []),
     'about:blank',
   ];
+  if (!sb.usable) {
+    if (sb.mode === 'require') {
+      throw new Error('chromium sandbox required (PU_CHROME_SANDBOX=require) but unavailable here: ' +
+        sb.why + ' — set PU_CHROME_SANDBOX=auto to accept --no-sandbox with its risk, or run on a host that supports it');
+    }
+    if (sb.mode !== 'off') {
+      console.error('cdp-daemon: WARNING chromium sandbox unavailable (' + sb.why +
+        ') — launching with --no-sandbox: page content runs with this user\'s full rights.' +
+        ' Set PU_CHROME_SANDBOX=require to refuse, or =off to silence this.');
+      try { appendFileSync(join(STATE_DIR, 'cdp-daemon.log'),
+        new Date().toISOString() + ' sandbox=disabled why=' + sb.why + '\n'); } catch {}
+    }
+  }
   const logFd = openSync(join(STATE_DIR, 'cdp-chrome.log'), 'a');
+  // The profile holds cookies and sessions: create it 0700 before Chrome does,
+  // and keep it 0700 in case an earlier run left it wider.
+  try { mkdirSync(PROFILE, { recursive: true, mode: 0o700 }); chmodSync(PROFILE, 0o700); } catch {}
   chromeProc = spawn(WRAPPER, args, { stdio: ['ignore', logFd, logFd], env: process.env });
   chromeProc.on('exit', () => {
     chromeProc = null; ws = null; readyPromise = null; sessions.clear(); spaces.clear();
@@ -248,6 +319,17 @@ async function launchChrome() {
   // Discover targets so popup tabs (window.open / target=_blank) surface
   // as Target.targetCreated signals (see drainEvents()).
   try { await cdpSend('Target.setDiscoverTargets', { discover: true }); } catch {}
+  // Close the startup about:blank tab Chrome was launched with. It is useless
+  // to us and its renderer process keeps ~9 threads for the daemon's whole
+  // life; measured on 2026-11-27. Nothing else uses it.
+  try {
+    const r = await cdpSend('Target.getTargets', {});
+    for (const t of r.targetInfos || []) {
+      if (t.type === 'page' && (!t.url || t.url === 'about:blank')) {
+        try { await cdpSend('Target.closeTarget', { targetId: t.targetId }); } catch {}
+      }
+    }
+  } catch {}
 }
 
 function ensureChrome() {
@@ -478,6 +560,7 @@ function refLabel(ref) {
 class PUPage {
   constructor(space, targetId, sessionId, label) {
     this.space = space; this.targetId = targetId; this.sessionId = sessionId; this.label = label;
+    this.busy = false;      // acquirePage()/finish() reuse bookkeeping
     this._snapBaselines = new Map();  // scopeKey -> Map(key -> rendered line); '' is the unscoped baseline
     this._sigCursor = 0;    // drainEvents() cursor into browserSignals
     this._dlCursor = 0;     // drainEvents() cursor into downloadLog
@@ -756,6 +839,9 @@ class PUPage {
   }
   async press(key, modifiers = 0) {
     const def = keyDefinition(key);
+    // A character key carries text into the focused element; do not let that
+    // become a second way to type into a password field.
+    if (def.text) await this.assertNotPasswordField();
     await this.dispatchKey(def, modifiers, 'keyDown');
     await this.dispatchKey(def, modifiers, 'keyUp');
     return { pressed: key };
@@ -763,8 +849,33 @@ class PUPage {
   // type(ref, text, {clear:true}) focuses ref, optionally clears it
   // (Ctrl+A + Backspace, as in chromeControl), then inserts text as real
   // input via Input.insertText.
+  //
+  // Password guard (2026-11-27): run.sh's `type` action refuses a password
+  // field before running, but a `-f` script calling p.type/p.typeText/press
+  // directly used to bypass that check (DEFECT-003). The guard now sits at
+  // the last step before text reaches the page and reads the element's
+  // *property* (el.type), so no attribute spelling can hide the field. The
+  // text being typed is never echoed in the error.
+  async assertNotPasswordField() {
+    let pw = false;
+    try {
+      pw = await this.evaluate(() => {
+        const el = document.activeElement;
+        if (!el) return false;
+        const t = String(el.type || '').toLowerCase();
+        const ac = String((el.getAttribute && el.getAttribute('autocomplete')) || '').toLowerCase();
+        return t === 'password' || ac === 'current-password' || ac === 'new-password';
+      });
+    } catch { pw = false; }
+    if (pw) {
+      throw new Error('password_field_refused: this build never fills a password field — ' +
+        'hand the flow to the host agent\'s browser + vault (code F-AUTH, next=builtin-browser-vault)');
+    }
+    return true;
+  }
   async type(ref, text, opts = {}) {
     await this.focus(ref);
+    await this.assertNotPasswordField();
     if (opts && opts.clear) {
       await this.dispatchKey({ key: 'a', code: 'KeyA', vk: 65 }, 2, 'keyDown');
       await this.dispatchKey({ key: 'a', code: 'KeyA', vk: 65 }, 2, 'keyUp');
@@ -775,6 +886,7 @@ class PUPage {
     return { typed: refLabel(ref), chars: String(text).length };
   }
   async typeText(text) {
+    await this.assertNotPasswordField();
     await this.cdp('Input.insertText', { text: String(text) });
     return { chars: String(text).length };
   }
@@ -1109,6 +1221,39 @@ class PUSpace {
     try { await page._ensureDownloadBehavior(); } catch {}
     return page;
   }
+  // acquirePage(label): reuse one warm tab per purpose instead of opening a
+  // new target for every call (2026-11-27).
+  //
+  // Measured problem: `run.sh read` created a target, used it and closed it,
+  // and Chromium kept the closed tab's renderer process alive as a spare.
+  // Each read therefore added ~12 threads and one renderer process; at
+  // ulimit -u=256 the daemon died with "pthread_create: Resource temporarily
+  // unavailable" after 5-6 reads. Reusing the tab keeps the tree flat:
+  // 10 reads in a row now hold steady instead of climbing.
+  //
+  // A tab that is already busy (two scripts at once) is never shared: the
+  // caller gets a second tab with a timestamped label, so parallel calls still
+  // work. finish({keep:[page]}) releases the tab for the next call.
+  async acquirePage(label = 'main') {
+    const key = String(label || 'main');
+    const ready = async (pg) => {
+      pg.busy = true;
+      // Leave no dialog or half-finished navigation behind for this call.
+      try { await pg.cdp('Page.handleJavaScriptDialog', { accept: false }); } catch {}
+      try { await pg.cdp('Page.stopLoading'); } catch {}
+      return pg;
+    };
+    const cur = this.pages.get(key);
+    if (cur && !cur.busy) return ready(cur);
+    // A parallel call may have left its own tab for the same purpose
+    // ("read-<ts>"): reuse it instead of opening a third one.
+    for (const pg of this.pages.values()) {
+      if (!pg.busy && pg.label.startsWith(key)) return ready(pg);
+    }
+    const p = await this.newPage(cur ? key + '-' + Date.now() : key);
+    p.busy = true;
+    return p;
+  }
   async page(label) {
     if (label && this.pages.has(label)) return this.pages.get(label);
     return this.newPage(label);
@@ -1117,7 +1262,12 @@ class PUSpace {
   async finish({ keep = [] } = {}) {
     const keepSet = new Set(keep.map(k => (k && k.label) || k));
     for (const p of [...this.pages.values()]) {
-      if (!keepSet.has(p.label) && !keepSet.has(p)) await p.close();
+      if (keepSet.has(p.label) || keepSet.has(p)) { p.busy = false; continue; }
+      // A page another call is using must survive this call: with a shared
+      // task space, closing it killed a concurrent read mid-flight
+      // (measured 2026-11-27 — two `run.sh read` at once deadlocked).
+      if (p.busy) continue;
+      await p.close();
     }
     if (this.pages.size === 0) {
       this.finished = true;
@@ -1215,4 +1365,7 @@ process.on('SIGINT', shutdown);
 server.listen(SOCK, () => {
   // Chrome launches lazily on the first page request; warm-up calls trigger
   // it through taskSpace/newPage. Nothing to do here.
+  // The socket runs any JS the caller sends, as this user: it must never be
+  // reachable by another local account (it was created 0755 / srwxr-xr-x).
+  try { chmodSync(SOCK, 0o600); } catch {}
 });

@@ -5,7 +5,8 @@
 #   bash extensions/vault-intake/intake.sh --source sheet           # the private Google Sheet
 #   bash extensions/vault-intake/intake.sh --source file            # the local form (inbox.tsv / inbox.csv)
 #   bash extensions/vault-intake/intake.sh --source file --file P   # a specific returned form
-#   bash extensions/vault-intake/intake.sh --test                   # same, but with a throwaway row, then cleanup
+# (There is no --test mode. tests/test-intake-file.sh builds a throwaway vault and
+#  home, writes a form, fills it and runs this same command end to end.)
 #
 # Two sources, one rule: the values travel gog stdout / file -> vault stdin
 # only, are never printed or logged, and the row is cleared once it is stored.

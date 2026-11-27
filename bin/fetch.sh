@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# fetch.sh — L0 레인: 브라우저 없이 curl + stdlib python으로 본문만 뽑는다.
+# fetch.sh — L0 레인: 브라우저 없이 curl + 표준 라이브러리만으로 본문만 뽑는다.
 # Usage: fetch.sh <url>
 # 마지막 stdout 줄은 항상 구조화 결과:
-#   %%CHAIN%% lane=L0 mode=read status=ok|fail code=<F-*> elapsed_s=<n> chars=<n> http=<code>
+#   %%CHAIN%% lane=L0 mode=read status=ok|fail code=<F-*> elapsed_s=<n> chars=<n> http=<code> next=<..>
 # 실패면 본문을 출력하지 않는다(진단은 stderr). 프록시 없음 — 이 환경은 직결.
+#
+# 판정은 bin/detect-page.py가 한다(HTTP 상태 + <title> + 마커 + 본문 길이·모양).
+# 2026-11-27 이전에는 본문 키워드 grep만 봤기 때문에 "Access denied를 고치는
+# 방법" 같은 정상 문서가 F-IP로, `type = 'password'` 표기의 입력란이 로그인벽
+# 감지에서 빠지는 오판이 있었다.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 URL="${1:?usage: fetch.sh <url>}"
 . "$HERE/pu-config.sh"
-. "$HERE/detect-code.sh"
 UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/159.0.0.0 Safari/537.36'
 MAXTIME="${L0_TIMEOUT:-20}"
 MINCHARS="${L0_MINCHARS:-100}"
@@ -17,6 +21,9 @@ elapsed() { awk -v s="$START" -v e="$(date +%s.%N)" 'BEGIN{printf "%.1f", e-s}';
 result() { # status code chars http next
   echo "%%CHAIN%% lane=L0 mode=read status=$1 code=$2 elapsed_s=$(elapsed) chars=$3 http=$4 next=$5";
 }
+code_of() { python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("code") or "-")
+except Exception: print("-")'; }
 
 HTML=$(mktemp "$TMPDIR/l0-XXXXXX.html")
 TXT=$(mktemp "$TMPDIR/l0-XXXXXX.txt")
@@ -30,24 +37,31 @@ if [ $RC -ne 0 ]; then
   cat "$ERR" >&2
   exit 1
 fi
-if [ "$HTTP" = "403" ] || [ "$HTTP" = "429" ]; then
-  result fail F-IP 0 "$HTTP" none; exit 1
-fi
-case "$HTTP" in
-  2*|3*) ;;
-  *) result fail F-NET 0 "$HTTP" none; exit 1 ;;
-esac
 
 python3 "$HERE/html2text.py" < "$HTML" > "$TXT" 2>/dev/null
 CHARS=$(wc -m < "$TXT")
-CODE=$(pu_detect_code "$TXT")
-if [ "$CODE" != "-" ]; then
-  result fail "$CODE" "$CHARS" "$HTTP" builtin-browser; exit 1
+
+# One engine for status/title/markers/shape/password fields.
+# F-EMPTY from the engine means "no body text"; the MINCHARS gate below owns
+# that verdict, so an empty answer falls through to it.
+CODE=$(python3 "$HERE/detect-page.py" --mode l0 --html "$HTML" --http "${HTTP:-0}" --text-chars "$CHARS" | code_of)
+[ "$CODE" = "F-EMPTY" ] && CODE=-
+# A non-success status that the engine did not call a block is a transport-level
+# failure (500, 404, 0). The old script mapped this with a case statement and
+# the rewrite dropped it, which turned a 500 into F-EMPTY.
+if [ "$CODE" = "-" ]; then
+  case "${HTTP:-0}" in
+    2*|3*) ;;
+    *) CODE=F-NET ;;
+  esac
 fi
-# 로그인벽은 원본 HTML(비밀번호 입력란)까지 보고 판정한다.
-CODE=$(pu_detect_auth "$HTML" "$CHARS")
 if [ "$CODE" != "-" ]; then
-  result fail "$CODE" "$CHARS" "$HTTP" builtin-browser-vault; exit 1
+  case "$CODE" in
+    F-AUTH)                 result fail "$CODE" "$CHARS" "$HTTP" builtin-browser-vault ;;
+    F-IP|F-BOT|F-EMPTY)     result fail "$CODE" "$CHARS" "$HTTP" builtin-browser ;;
+    *)                      result fail "$CODE" "$CHARS" "$HTTP" none ;;   # F-NET / F-TIMEOUT
+  esac
+  exit 1
 fi
 if [ "$CHARS" -lt "$MINCHARS" ]; then
   result fail F-EMPTY "$CHARS" "$HTTP" builtin-browser; exit 1

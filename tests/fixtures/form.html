@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Form page</title></head>
+<body>
+<h1>Form page</h1>
+<p>This page exists so the action commands can be tested end to end: type into
+the field, press the button, read the result back from the DOM.</p>
+<form id="f">
+  <input id="q" name="q" type="text" placeholder="Search">
+  <button id="go" type="submit">Search</button>
+</form>
+<div id="out">nothing yet</div>
+<p id="typed"></p>
+<script>
+  document.getElementById('f').addEventListener('submit', (e) => {
+    e.preventDefault();
+    document.getElementById('out').textContent = 'submitted:' + document.getElementById('q').value;
+  });
+  document.getElementById('q').addEventListener('keydown', (e) => {
+    document.getElementById('typed').textContent = 'key:' + e.key + ':' + document.getElementById('q').value;
+  });
+</script>
+</body></html>

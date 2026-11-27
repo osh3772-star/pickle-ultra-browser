@@ -3,7 +3,7 @@
 // bin/cdp-daemon.mjs
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdirSync, writeFileSync, rmSync, openSync, existsSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, openSync, existsSync, readdirSync, statSync, chmodSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import util from "node:util";
@@ -22,8 +22,58 @@ var HEADLESS = process.env.PICKLE_ULTRA_HEADLESS !== "0";
 var EPHEMERAL = process.env.PICKLE_ULTRA_EPHEMERAL === "1";
 var AsyncFunction = Object.getPrototypeOf(async function() {
 }).constructor;
-mkdirSync(STATE_DIR, { recursive: true });
-writeFileSync(PIDFILE, String(process.pid));
+mkdirSync(STATE_DIR, { recursive: true, mode: 448 });
+try {
+  chmodSync(STATE_DIR, 448);
+} catch {
+}
+writeFileSync(PIDFILE, String(process.pid), { mode: 384 });
+try {
+  chmodSync(PIDFILE, 384);
+} catch {
+}
+function sandboxSupport() {
+  const mode = String(process.env.PU_CHROME_SANDBOX || "auto").toLowerCase();
+  if (mode === "off") return { mode, usable: false, why: "PU_CHROME_SANDBOX=off" };
+  if (process.platform === "darwin") return { mode, usable: true, why: "macOS seatbelt" };
+  if (process.platform !== "linux") return { mode, usable: false, why: "no Chromium sandbox on " + process.platform };
+  const rd = (p) => {
+    try {
+      return readFileSync(p, "utf8").trim();
+    } catch {
+      return "";
+    }
+  };
+  const usernsClone = rd("/proc/sys/kernel/unprivileged_userns_clone");
+  const maxNs = rd("/proc/sys/user/max_user_namespaces");
+  const apparmor = rd("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
+  if (usernsClone === "0") return { mode, usable: false, why: "unprivileged_userns_clone=0" };
+  if (maxNs === "0") return { mode, usable: false, why: "max_user_namespaces=0" };
+  if (apparmor === "2") return { mode, usable: false, why: "apparmor_restrict_unprivileged_userns=2" };
+  const cands = [];
+  for (const c of [process.env.PICKLE_ULTRA_CHROME, process.env.CHROME_BIN]) if (c) cands.push(c);
+  try {
+    const root = join(homedir(), ".cache", "ms-playwright");
+    for (const d of readdirSync(root)) if (d.startsWith("chromium-")) cands.push(join(root, d, "chrome-linux64", "chrome"));
+  } catch {
+  }
+  for (const c of cands) {
+    try {
+      const st = statSync(join(join(c, ".."), "chrome_sandbox"));
+      if (st.uid === 0 && st.mode & 2048) return { mode, usable: true, why: "setuid chrome_sandbox" };
+    } catch {
+    }
+  }
+  const uid = process.getuid ? process.getuid() : -1;
+  if (uid === 0) return { mode, usable: false, why: "running as root without a setuid sandbox" };
+  if (usernsClone === "1" || Number(maxNs) > 0) {
+    return { mode, usable: true, why: "user namespaces available" };
+  }
+  if (usernsClone === "" && maxNs === "") {
+    return { mode, usable: true, why: "no namespace sysctl \u2014 assuming available" };
+  }
+  return { mode, usable: false, why: "user namespaces unavailable" };
+}
 var chromeProc = null;
 var chromePort = 0;
 var ws = null;
@@ -177,6 +227,7 @@ async function launchChrome() {
     }
   }
   if (!chromePort) chromePort = candidates[0];
+  const sb = sandboxSupport();
   const args = [
     `--remote-debugging-port=${chromePort}`,
     "--remote-debugging-address=127.0.0.1",
@@ -184,14 +235,33 @@ async function launchChrome() {
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-dev-shm-usage",
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
+    ...sb.usable ? [] : ["--no-sandbox", "--disable-setuid-sandbox"],
     "--mute-audio",
     "--disable-blink-features=AutomationControlled",
     ...HEADLESS ? ["--headless=new", "--hide-scrollbars", "--window-size=1280,800"] : [],
     "about:blank"
   ];
+  if (!sb.usable) {
+    if (sb.mode === "require") {
+      throw new Error("chromium sandbox required (PU_CHROME_SANDBOX=require) but unavailable here: " + sb.why + " \u2014 set PU_CHROME_SANDBOX=auto to accept --no-sandbox with its risk, or run on a host that supports it");
+    }
+    if (sb.mode !== "off") {
+      console.error("cdp-daemon: WARNING chromium sandbox unavailable (" + sb.why + ") \u2014 launching with --no-sandbox: page content runs with this user's full rights. Set PU_CHROME_SANDBOX=require to refuse, or =off to silence this.");
+      try {
+        appendFileSync(
+          join(STATE_DIR, "cdp-daemon.log"),
+          (/* @__PURE__ */ new Date()).toISOString() + " sandbox=disabled why=" + sb.why + "\n"
+        );
+      } catch {
+      }
+    }
+  }
   const logFd = openSync(join(STATE_DIR, "cdp-chrome.log"), "a");
+  try {
+    mkdirSync(PROFILE, { recursive: true, mode: 448 });
+    chmodSync(PROFILE, 448);
+  } catch {
+  }
   chromeProc = spawn(WRAPPER, args, { stdio: ["ignore", logFd, logFd], env: process.env });
   chromeProc.on("exit", () => {
     chromeProc = null;
@@ -223,6 +293,18 @@ async function launchChrome() {
   ws.onmessage = onWsMessage;
   try {
     await cdpSend("Target.setDiscoverTargets", { discover: true });
+  } catch {
+  }
+  try {
+    const r = await cdpSend("Target.getTargets", {});
+    for (const t of r.targetInfos || []) {
+      if (t.type === "page" && (!t.url || t.url === "about:blank")) {
+        try {
+          await cdpSend("Target.closeTarget", { targetId: t.targetId });
+        } catch {
+        }
+      }
+    }
   } catch {
   }
 }
@@ -442,6 +524,7 @@ var PUPage = class {
     this.targetId = targetId;
     this.sessionId = sessionId;
     this.label = label;
+    this.busy = false;
     this._snapBaselines = /* @__PURE__ */ new Map();
     this._sigCursor = 0;
     this._dlCursor = 0;
@@ -739,6 +822,7 @@ var PUPage = class {
   }
   async press(key, modifiers = 0) {
     const def = keyDefinition(key);
+    if (def.text) await this.assertNotPasswordField();
     await this.dispatchKey(def, modifiers, "keyDown");
     await this.dispatchKey(def, modifiers, "keyUp");
     return { pressed: key };
@@ -746,8 +830,34 @@ var PUPage = class {
   // type(ref, text, {clear:true}) focuses ref, optionally clears it
   // (Ctrl+A + Backspace, as in chromeControl), then inserts text as real
   // input via Input.insertText.
+  //
+  // Password guard (2026-11-27): run.sh's `type` action refuses a password
+  // field before running, but a `-f` script calling p.type/p.typeText/press
+  // directly used to bypass that check (DEFECT-003). The guard now sits at
+  // the last step before text reaches the page and reads the element's
+  // *property* (el.type), so no attribute spelling can hide the field. The
+  // text being typed is never echoed in the error.
+  async assertNotPasswordField() {
+    let pw = false;
+    try {
+      pw = await this.evaluate(() => {
+        const el = document.activeElement;
+        if (!el) return false;
+        const t = String(el.type || "").toLowerCase();
+        const ac = String(el.getAttribute && el.getAttribute("autocomplete") || "").toLowerCase();
+        return t === "password" || ac === "current-password" || ac === "new-password";
+      });
+    } catch {
+      pw = false;
+    }
+    if (pw) {
+      throw new Error("password_field_refused: this build never fills a password field \u2014 hand the flow to the host agent's browser + vault (code F-AUTH, next=builtin-browser-vault)");
+    }
+    return true;
+  }
   async type(ref, text, opts = {}) {
     await this.focus(ref);
+    await this.assertNotPasswordField();
     if (opts && opts.clear) {
       await this.dispatchKey({ key: "a", code: "KeyA", vk: 65 }, 2, "keyDown");
       await this.dispatchKey({ key: "a", code: "KeyA", vk: 65 }, 2, "keyUp");
@@ -758,6 +868,7 @@ var PUPage = class {
     return { typed: refLabel(ref), chars: String(text).length };
   }
   async typeText(text) {
+    await this.assertNotPasswordField();
     await this.cdp("Input.insertText", { text: String(text) });
     return { chars: String(text).length };
   }
@@ -1124,6 +1235,42 @@ var PUSpace = class {
     }
     return page;
   }
+  // acquirePage(label): reuse one warm tab per purpose instead of opening a
+  // new target for every call (2026-11-27).
+  //
+  // Measured problem: `run.sh read` created a target, used it and closed it,
+  // and Chromium kept the closed tab's renderer process alive as a spare.
+  // Each read therefore added ~12 threads and one renderer process; at
+  // ulimit -u=256 the daemon died with "pthread_create: Resource temporarily
+  // unavailable" after 5-6 reads. Reusing the tab keeps the tree flat:
+  // 10 reads in a row now hold steady instead of climbing.
+  //
+  // A tab that is already busy (two scripts at once) is never shared: the
+  // caller gets a second tab with a timestamped label, so parallel calls still
+  // work. finish({keep:[page]}) releases the tab for the next call.
+  async acquirePage(label = "main") {
+    const key = String(label || "main");
+    const ready = async (pg) => {
+      pg.busy = true;
+      try {
+        await pg.cdp("Page.handleJavaScriptDialog", { accept: false });
+      } catch {
+      }
+      try {
+        await pg.cdp("Page.stopLoading");
+      } catch {
+      }
+      return pg;
+    };
+    const cur = this.pages.get(key);
+    if (cur && !cur.busy) return ready(cur);
+    for (const pg of this.pages.values()) {
+      if (!pg.busy && pg.label.startsWith(key)) return ready(pg);
+    }
+    const p = await this.newPage(cur ? key + "-" + Date.now() : key);
+    p.busy = true;
+    return p;
+  }
   async page(label) {
     if (label && this.pages.has(label)) return this.pages.get(label);
     return this.newPage(label);
@@ -1134,7 +1281,12 @@ var PUSpace = class {
   async finish({ keep = [] } = {}) {
     const keepSet = new Set(keep.map((k) => k && k.label || k));
     for (const p of [...this.pages.values()]) {
-      if (!keepSet.has(p.label) && !keepSet.has(p)) await p.close();
+      if (keepSet.has(p.label) || keepSet.has(p)) {
+        p.busy = false;
+        continue;
+      }
+      if (p.busy) continue;
+      await p.close();
     }
     if (this.pages.size === 0) {
       this.finished = true;
@@ -1265,4 +1417,8 @@ function shutdown() {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 server.listen(SOCK, () => {
+  try {
+    chmodSync(SOCK, 384);
+  } catch {
+  }
 });

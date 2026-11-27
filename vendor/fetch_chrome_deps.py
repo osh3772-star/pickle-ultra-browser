@@ -5,7 +5,7 @@ Uses the Debian trixie Packages and Contents indexes to map sonames to packages,
 downloads the .deb files, and extracts them under .tools/chrome-deps (override with
 PU_CHROME_DEPS). Needs dpkg-deb; Linux only.
 """
-import gzip, lzma, os, re, subprocess, sys, urllib.request
+import gzip, hashlib, lzma, os, re, subprocess, sys, urllib.request
 
 BASE = "https://deb.debian.org/debian"
 TREE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +46,32 @@ def dl(url, dest):
     os.replace(dest + ".part", dest)
     print(f"      -> {os.path.getsize(dest)/1e6:.1f} MB", flush=True)
     return dest
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_deb(path, expected, name):
+    """Every .deb must match the SHA256 the Debian Packages index published.
+    Without this the install trusted whatever arrived over TLS, including a
+    stale file left behind by an interrupted earlier run."""
+    if not expected:
+        print(f"   .. {os.path.basename(path)} has no SHA256 in the index (old mirror?)", flush=True)
+        return True
+    got = sha256_file(path)
+    if got != expected:
+        print(f"   !! checksum mismatch for {name}: expected {expected[:16]}… got {got[:16]}… — discarding", flush=True)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def parse_packages():
@@ -179,12 +205,21 @@ def main():
                     queue.append(chosen)
 
         print(f"   packages to fetch: {sorted(need)}", flush=True)
+        if need and need <= installed:
+            print("   nothing new to install — stopping early", flush=True)
+            break
         for n in sorted(need):
             info = pkgs[n]
             fn = info["Filename"]
+            sha = info.get("SHA256", "")
             deb = os.path.join(DEBS, os.path.basename(fn))
+            if os.path.exists(deb) and not verify_deb(deb, sha, n):
+                dl(f"{BASE}/{fn}", deb)          # bad cache: fetch once more
             if not os.path.exists(deb):
                 dl(f"{BASE}/{fn}", deb)
+            if not os.path.exists(deb) or not verify_deb(deb, sha, n):
+                print(f"   !! {n}: not installed (unverified download)", flush=True)
+                continue
             dest = os.path.join(PKGS, n)
             if not os.path.isdir(dest) or not os.listdir(dest):
                 os.makedirs(dest, exist_ok=True)
@@ -193,8 +228,18 @@ def main():
                     print(f"   !! extract failed {n}: {r.stderr.strip()}", flush=True)
                     continue
             installed.add(n)
+        # Flatten after every round: ldd only sees $LIB, so without this the
+        # next round reported the same "missing" list and the loop ran all
+        # seven times doing nothing (measured 2026-11-27).
+        flatten()
 
-    # flatten libraries from extracted packages
+    missing = ldd_missing(LIB)
+    print(f"== FINAL missing ({len(missing)}): {missing}", flush=True)
+    return 0 if not missing else 1
+
+
+def flatten():
+    """Copy extracted libraries into $LIB (no-op for parts already present)."""
     n = 0
     skip = 0
     for root, dirs, files in os.walk(PKGS):
@@ -219,9 +264,7 @@ def main():
                 subprocess.run(["cp", "-a", src, dst])
                 n += 1
     print(f"== flattened {n} libs into {LIB} (skipped {skip} already in system)", flush=True)
-    missing = ldd_missing(LIB)
-    print(f"== FINAL missing ({len(missing)}): {missing}", flush=True)
-    return 0 if not missing else 1
+    return n
 
 
 if __name__ == "__main__":
