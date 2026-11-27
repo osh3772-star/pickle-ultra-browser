@@ -440,20 +440,48 @@ def cmd_init(args):
 
 
 def cmd_status(args):
+    """Counts only: sites listed, password cells filled, sites still unfilled, and
+    when this check ran. Never a value, never a site's username."""
     cfg = pu_config.load()
     sheet_id = cfg.get("sheet_id") or ""
-    if not sheet_id:
-        print("skip no-sheet")
-        return 0
-    gog_bin = args.gog or os.environ.get("PU_GOG") or "gog"
-    rows, err = read_range(sheet_id, "%s!A2:C200" % cfg.get("sheet_tab", "in"), gog_bin)
-    if err:
-        print("fail code=read")
-        return 1
-    listed = sum(1 for r in rows if r and r[0].strip())
-    waiting = sum(1 for r in rows if r and r[0].strip() and len(r) > 2 and r[2].strip())
-    print(json.dumps({"sheet_id": sheet_id, "url": cfg.get("sheet_url", ""),
-                      "listed": listed, "waiting": waiting}, ensure_ascii=False))
+    source = "sheet" if sheet_id else "inbox"
+    listed = waiting = 0
+    path = ""
+    if sheet_id:
+        gog_bin = args.gog or os.environ.get("PU_GOG") or "gog"
+        rows, err = read_range(sheet_id, "%s!A2:C200" % cfg.get("sheet_tab", "in"), gog_bin)
+        if err:
+            print("fail code=read")
+            return 1
+        listed = sum(1 for r in rows if r and r[0].strip())
+        waiting = sum(1 for r in rows if r and r[0].strip() and len(r) > 2 and r[2].strip())
+    else:
+        import vault_form
+        for cand in (pu_config.inbox_path("tsv"), pu_config.inbox_path("csv"),
+                     pu_config.inbox_path("xlsx")):
+            if os.path.exists(cand):
+                path = cand
+                break
+        if not path:
+            print("skip no-form")
+            return 0
+        rows = vault_form.read_rows(path)
+        listed = len(rows)
+        waiting = sum(1 for r in rows if r[2].strip())
+
+    checked_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    cfg["last_status_at"] = checked_at
+    pu_config.save(cfg)
+    unfilled = max(listed - waiting, 0)
+    if args.json:
+        print(json.dumps({"source": source, "sheet_id": sheet_id, "path": path,
+                          "url": cfg.get("sheet_url", ""), "listed": listed,
+                          "waiting": waiting, "unfilled": unfilled,
+                          "checked_at": checked_at}, ensure_ascii=False))
+    else:
+        print("status source=%s listed=%d waiting=%d unfilled=%d checked_at=%s%s"
+              % (source, listed, waiting, unfilled, checked_at,
+                 (" path=" + path) if path else (" sheet_id=" + sheet_id if sheet_id else "")))
     return 0
 
 
