@@ -291,7 +291,9 @@ async function applyVisuals(sheetId, gogBin, tab, lastRow) {
     [["sheets", "resize-rows", sheetId, rng(`2:${last}`), "--height", "34"], "row-height:data"],
     // 3) header band: bold, dark, centred
     [fmt("A1:C1", cellFormat({ bg: "#1F3B57", bold: true, fg: "#FFFFFF", borders: true })), "format:header"],
-    // 4) data area: thin borders, vertical centring, clipped text
+    // 4) data area: plain text format (prevents numeric IDs/passwords from right-aligning) + thin borders
+    [["sheets", "number-format", sheetId, rng("A2:C200"), "--type", "TEXT"], "number-format:TEXT"],
+    [fmt("A2:C200", { horizontalAlignment: "LEFT", verticalAlignment: "MIDDLE" }), "align:A2:C200"],
     [fmt(`A2:C${last}`, cellFormat({ borders: true, halign: "LEFT" })), "format:data"],
     // 5) B reads as pre-filled grey; C is the one cell the user fills in
     [fmt(`B2:B${last}`, cellFormat({ bg: "#F1F3F5", halign: "LEFT", borders: true })), "format:B"],
