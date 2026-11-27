@@ -35,11 +35,11 @@ Related: [README](README.md) · [INSTALL](INSTALL.md) · [NOTICE-TO-USER](NOTICE
 Both carry one deliberate exposure: a password exists outside the vault until the agent
 moves it — in a Google Sheet, or in the form file the user filled in on their phone.
 
-- Create a sheet with `bin/vault-sheet-init.sh`, which leaves the default **private** sharing as
+- Create a sheet with `extensions/vault-intake/vault-sheet-init.sh`, which leaves the default **private** sharing as
   is. Never turn it into a public or link-shared document. Without a connected Google account
-  there is no sheet: `bin/vault-form.sh` writes the same three columns to
+  there is no sheet: `extensions/vault-intake/vault-form.sh` writes the same three columns to
   `$PICKLE_ULTRA_HOME/inbox.tsv` (mode 0600) instead.
-- `bin/intake.sh` clears column B:C of each sheet row it stored, or rewrites the file row with
+- `extensions/vault-intake/intake.sh` clears column B:C of each sheet row it stored, or rewrites the file row with
   the site only, and reads it back to check. When the file source was used and every row
   succeeded, the file and its same-named copies under `attachments/` are zeroed and deleted.
   If it prints `cleared=no` or `keep file=… reason=pending`, the value is still there: shred the

@@ -147,8 +147,8 @@ Related documents: [INSTALL.md](INSTALL.md) (the procedure you just ran) ·
 | 목록 | `vault.py list` — 이름·용도·저장시각 |
 | 삭제 | `vault.py delete <이름>` — 파일 덮어쓰기 후 삭제 |
 | 시트 | 제목 `"<에이전트 이름> 인입 (자동 파쇄)"`, 탭 `in`, 헤더 `사이트/아이디/비밀번호` |
-| 시트 반영 | `bash bin/intake.sh --source sheet` — 채워진 행만, B:C 비움, 429면 20초 후 1회 재시도 |
-| 파일 | `bash bin/vault-form.sh` → `$PICKLE_ULTRA_HOME/inbox.tsv` (0600), 헤더 + 사이트/아이디/빈 비밀번호 |
-| 파일 반영 | `bash bin/intake.sh --source file --file <반환 파일>` — 저장한 줄은 값 비우고, 전부 성공하면 파일·attachments 사본 파쇄·삭제 |
+| 시트 반영 | `bash extensions/vault-intake/intake.sh --source sheet` — 채워진 행만, B:C 비움, 429면 20초 후 1회 재시도 |
+| 파일 | `bash extensions/vault-intake/vault-form.sh` → `$PICKLE_ULTRA_HOME/inbox.tsv` (0600), 헤더 + 사이트/아이디/빈 비밀번호 |
+| 파일 반영 | `bash extensions/vault-intake/intake.sh --source file --file <반환 파일>` — 저장한 줄은 값 비우고, 전부 성공하면 파일·attachments 사본 파쇄·삭제 |
 | 폴백 | 시트 실패(미연동·권한·생성 실패·429 지속) → 파일 왕복 1회. 파일도 안 열리면 TSV→CSV→xlsx 1회, 그래도 안 되면 사이트·아이디 목록만 안내 |
 | 시트 설정 | `~/.config/pickle-ultra/config.json` (0600) — 시트 ID·에이전트 이름만, 비밀값 없음 |

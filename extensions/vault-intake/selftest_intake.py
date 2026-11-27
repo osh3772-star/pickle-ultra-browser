@@ -20,8 +20,8 @@ For each profile:
 Test values are fixed fake tokens, never printed. Cleanup: every sheet to the
 trash, temp directories removed.
 
-  python3 bin/selftest_intake.py            (or bash bin/selftest-intake.sh)
-  python3 bin/selftest_intake.py --keep     # keep the temp dir for inspection
+  python3 extensions/vault-intake/selftest_intake.py            (or bash extensions/vault-intake/selftest-intake.sh)
+  python3 extensions/vault-intake/selftest_intake.py --keep     # keep the temp dir for inspection
 
 Exit codes: 0 all checks passed · 1 a check failed · 2 skipped (no Google access)
 """
@@ -33,8 +33,10 @@ import subprocess
 import sys
 import tempfile
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BIN = os.path.join(BASE, "bin")
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+BIN = os.path.join(REPO, "bin")
+sys.path.insert(0, HERE)
 sys.path.insert(0, BIN)
 import vault_form  # noqa: E402  (xlsx-free: only used for its reader)
 
@@ -99,7 +101,7 @@ def gog(args, timeout=120):
 
 
 def run(cmd, env):
-    p = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=BASE)
+    p = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=REPO)
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
@@ -250,7 +252,7 @@ def profile_cycle(r: Runner, prof, root):
 
     tmp_vault_dir = os.path.join(work, "vault")
     os.makedirs(tmp_vault_dir, exist_ok=True)
-    shutil.copy(os.path.join(BASE, "agent-vault", "vault.py"),
+    shutil.copy(os.path.join(REPO, "agent-vault", "vault.py"),
                 os.path.join(tmp_vault_dir, "vault.py"))
     vault_py = os.path.join(tmp_vault_dir, "vault.py")
     subprocess.run([sys.executable, vault_py, "init"], capture_output=True, text=True)
@@ -288,7 +290,7 @@ def main(argv):
 
     r = Runner()
     root = tempfile.mkdtemp(prefix="pu-selftest-intake-")
-    print("selftest-intake: Pickle Ultra Browser — %s" % BASE)
+    print("selftest-intake: Pickle Ultra Browser — %s" % REPO)
     print("selftest-intake: gog=%s work=%s" % (GOG, root))
     try:
         for prof in (PROFILE_A, PROFILE_B):
@@ -305,7 +307,7 @@ def main(argv):
 
     print("----")
     if r.skipped and r.npass == 0:
-        print("selftest-intake: SKIP reason=no-google (use bin/vault-form.sh instead)")
+        print("selftest-intake: SKIP reason=no-google (use extensions/vault-intake/vault-form.sh instead)")
         return 2
     print("selftest-intake: PASS=%d FAIL=%d" % (r.npass, r.nfail))
     return 0 if r.nfail == 0 else 1

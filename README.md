@@ -33,11 +33,11 @@ to its user right away.
 - **Three lanes** (`bin/chain.sh`): L0 is curl + stdlib HTML→text (about a second, no
   browser). L1 is the raw-CDP read. There is deliberately no L2: when L1 is blocked the
   harness reports it and stops.
-- **A private intake sheet — or a file the user fills in.** `bin/vault-sheet-init.sh` builds a
+- **A private intake sheet — or a file the user fills in.** `extensions/vault-intake/vault-sheet-init.sh` builds a
   per-user Google Sheet (when the agent's Google account is connected) whose column A already
   lists the sites from the vault and whose column B already holds the username. The user types
-  only the password, and `bin/intake.sh` moves it into the encrypted vault and wipes the cells.
-  Without a connected Google account, `bin/vault-form.sh` writes the same three columns to a
+  only the password, and `extensions/vault-intake/intake.sh` moves it into the encrypted vault and wipes the cells.
+  Without a connected Google account, `extensions/vault-intake/vault-form.sh` writes the same three columns to a
   local file (`.tsv`/`.csv`) that the user fills in on their own phone and sends back.
 
 ## What this is not
@@ -101,11 +101,11 @@ Credentials are the one thing this harness is careful about.
   (`AGENT_VAULT_VALUE` by default) or stdin. **No command prints a value**; `list` shows
   names, purposes and dates only.
 - The intake table is the only path a human uses: column A = site, column B = username
-  (pre-filled at install), column C = the password cell the user fills in. `bin/intake.sh`
+  (pre-filled at install), column C = the password cell the user fills in. `extensions/vault-intake/intake.sh`
   stores filled rows in the vault and clears B:C, leaving A in place.
-- Without a connected Google account the same table travels as a file: `bin/vault-form.sh`
+- Without a connected Google account the same table travels as a file: `extensions/vault-intake/vault-form.sh`
   writes `$PICKLE_ULTRA_HOME/inbox.tsv` (or `.csv`) mode 0600, the user fills the password
-  column on their phone and sends the file back in chat, and `bin/intake.sh --source file`
+  column on their phone and sends the file back in chat, and `extensions/vault-intake/intake.sh --source file`
   stores it, then zeroes and deletes that file and its `attachments/` copies.
 - Rotation is `store <name> --purpose … --force`; removal is `delete <name>` (shreds the
   file). Neither prints anything.
@@ -152,9 +152,9 @@ Install configuration (sheet id, agent name) lives in
   `browser_fill_secret` 몫이고, 이 하네스는 비밀번호 칸을 아예 채우지 않습니다.
 - **자격증명**: `agent-vault`에 Fernet 암호문으로만 저장하고, 값은 표준입출력 파이프로만
   흐르며 출력·로그·대화에 남지 않습니다. 삭제는 `delete`, 교체는 `store --force`.
-- **인입 시트**: 설치 직후 `bin/vault-sheet-init.sh`가 사용자 구글 계정에 **비공개 시트**를
+- **인입 시트**: 설치 직후 `extensions/vault-intake/vault-sheet-init.sh`가 사용자 구글 계정에 **비공개 시트**를
   만들고, A열에 사이트, **B열에 아이디를 미리 채워** 둡니다. 사용자는 **비밀번호 칸(C열)만**
-  채우면 되고, `bin/intake.sh`가 볼트로 옮긴 뒤 B:C를 지웁니다.
+  채우면 되고, `extensions/vault-intake/intake.sh`가 볼트로 옮긴 뒤 B:C를 지웁니다.
 - **한계**: 데이터센터 IP라 Cloudflare Managed Challenge는 통과하지 못합니다(정상 동작입니다).
 
 설치·검증 절차는 [INSTALL.md](INSTALL.md), 설치 직후 사용자에게 할 고지는

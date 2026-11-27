@@ -11,12 +11,12 @@
 # Everything it creates is removed afterwards (sheets to the trash, temp dirs
 # deleted). No value is ever printed.
 #
-#   bash bin/selftest-intake.sh
-#   bash bin/selftest-intake.sh --keep     # keep the temp dir
+#   bash extensions/vault-intake/selftest-intake.sh
+#   bash extensions/vault-intake/selftest-intake.sh --keep     # keep the temp dir
 #
 # Exit codes: 0 every check passed · 1 a check failed · 2 no Google access
-#             (in that case use bin/vault-form.sh + bin/intake.sh --source file)
+#             (in that case use extensions/vault-intake/vault-form.sh + extensions/vault-intake/intake.sh --source file)
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$HERE/pu-config.sh"
+. "$HERE/../../bin/pu-config.sh"
 exec python3 "$HERE/selftest_intake.py" "$@"

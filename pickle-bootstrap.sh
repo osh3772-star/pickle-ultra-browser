@@ -107,4 +107,4 @@ PU_SETTLE=0 "$HERE/bin/run.sh" warm || exit 1
 "$HERE/bin/run.sh" read https://example.com | tail -2
 "$HERE/bin/run.sh" stop
 echo
-echo "done. next: bash $HERE/bin/run.sh doctor   |   bash $HERE/bin/vault-sheet-init.sh"
+echo "done. next: bash $HERE/bin/run.sh doctor   |   bash $HERE/extensions/vault-intake/vault-sheet-init.sh"

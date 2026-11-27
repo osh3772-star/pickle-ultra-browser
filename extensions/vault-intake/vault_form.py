@@ -39,8 +39,10 @@ import os
 import subprocess
 import sys
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "bin"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))   # extensions/vault-intake -> tree root
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(REPO, "bin"))
 import pu_config  # noqa: E402
 from vault_sheet import find_list_with_key, normalize_site, plan_rows  # noqa: E402
 

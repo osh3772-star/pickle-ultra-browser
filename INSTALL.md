@@ -102,8 +102,8 @@ Two paths, in this order. Use the first that works; never build both.
 
 | order | condition | you run | who fills it | what you can see later |
 |---|---|---|---|---|
-| **1. Google Sheet** | the agent's Google account is connected (`gog` works, Sheets access) | `bash bin/vault-sheet-init.sh` | the user types only the password cell (C) | the agent reads the sheet itself, at any intake |
-| **2. File round trip** | no Google connection, or step 1 failed | `bash bin/vault-form.sh` | the user opens the file on their own phone, fills the password column, sends the file **back in chat** | the agent reads the returned file only |
+| **1. Google Sheet** | the agent's Google account is connected (`gog` works, Sheets access) | `bash extensions/vault-intake/vault-sheet-init.sh` | the user types only the password cell (C) | the agent reads the sheet itself, at any intake |
+| **2. File round trip** | no Google connection, or step 1 failed | `bash extensions/vault-intake/vault-form.sh` | the user opens the file on their own phone, fills the password column, sends the file **back in chat** | the agent reads the returned file only |
 
 Why this order: with a sheet the agent can check the cells itself and clear them right after intake.
 Without a connection it cannot read a sheet at all, so the form travels as a file the user hands back.
@@ -115,7 +115,7 @@ Without a connection it cannot read a sheet at all, so the form travels as a fil
 ## 5.1 Path 1 — the private Google Sheet
 
 ```bash
-bash bin/vault-sheet-init.sh
+bash extensions/vault-intake/vault-sheet-init.sh
 ```
 
 What it does: reads the **agent's own vault login list** (`vault logins` — site, username,
@@ -153,14 +153,14 @@ Then **send the user the link** with this sentence (adapt the wording, keep the 
 > **비밀번호 칸만 채워 주시면 됩니다. 아이디는 제가 이미 넣어 뒀습니다.**
 > 채팅창에는 비밀번호를 붙여넣지 마세요 — 시트에만 넣으시면 제가 옮겨서 암호화해 보관합니다.
 
-When the user says the cells are filled: `bash bin/intake.sh --source sheet`.
+When the user says the cells are filled: `bash extensions/vault-intake/intake.sh --source sheet`.
 
 ## 5.2 Path 2 — the file round trip (no Google account)
 
 ```bash
-bash bin/vault-form.sh                  # $PICKLE_ULTRA_HOME/inbox.tsv, mode 600
-bash bin/vault-form.sh --format csv     # same table, widest phone support
-bash bin/vault-form.sh --format xlsx    # only if python 'openpyxl' is installed
+bash extensions/vault-intake/vault-form.sh                  # $PICKLE_ULTRA_HOME/inbox.tsv, mode 600
+bash extensions/vault-intake/vault-form.sh --format csv     # same table, widest phone support
+bash extensions/vault-intake/vault-form.sh --format xlsx    # only if python 'openpyxl' is installed
 ```
 
 It reads the same vault metadata and writes the same three columns (사이트 / 아이디 / 비밀번호)
@@ -171,7 +171,7 @@ Re-running keeps anything the user already typed and only appends missing sites.
 When the user sends the filled file back (it lands in the attachment folder):
 
 ```bash
-bash bin/intake.sh --source file --file <returned path> --attachments-dir attachments
+bash extensions/vault-intake/intake.sh --source file --file <returned path> --attachments-dir attachments
 ```
 
 **Pass condition:** one `ok site=… row=<n> cleared=yes` line per filled row, exit `0`, then
@@ -245,7 +245,7 @@ echo "exit=$?"
 **Path 1, sheet:**
 
 ```bash
-python3 bin/vault_sheet.py status                                   # listed=<n> waiting=0
+python3 extensions/vault-intake/vault_sheet.py status                                   # listed=<n> waiting=0
 ```
 
 **Pass:** `waiting=0` right after step 5, `listed` equal to the number of rows written.
@@ -253,17 +253,17 @@ python3 bin/vault_sheet.py status                                   # listed=<n>
 Once the user says they have filled a password row, run:
 
 ```bash
-bash bin/intake.sh --source sheet
+bash extensions/vault-intake/intake.sh --source sheet
 ```
 
 **Pass:** one line per row, `ok site=<site> row=<n> cleared=yes`, exit `0`. Then
-`python3 bin/vault_sheet.py status` shows `waiting=0` again, and `python3 agent-vault/vault.py list`
+`python3 extensions/vault-intake/vault_sheet.py status` shows `waiting=0` again, and `python3 agent-vault/vault.py list`
 shows the site. Never print what was stored.
 
 **Path 2, file:**
 
 ```bash
-bash bin/vault-form.sh --format tsv        # ok form=… rows=<n> prefilled=<n> mode=600, plus attach=…
+bash extensions/vault-intake/vault-form.sh --format tsv        # ok form=… rows=<n> prefilled=<n> mode=600, plus attach=…
 ```
 
 **Pass:** the file exists at the printed path, mode `600`, header `사이트 / 아이디 / 비밀번호`,
@@ -271,14 +271,14 @@ column 2 filled for sites whose vault entry has a password, column 3 empty every
 Once the user sends the filled file back:
 
 ```bash
-bash bin/intake.sh --source file --file <returned path> --attachments-dir attachments
+bash extensions/vault-intake/intake.sh --source file --file <returned path> --attachments-dir attachments
 ```
 
 **Pass:** `cleared=yes` per row, exit `0`, then `shredded file=… removed=yes attachments=<n>`;
 the file is gone, `grep -r '<a value you typed>' attachments/ <tree>` finds nothing, and
 `python3 agent-vault/vault.py list` shows the site. Never print what was stored.
 
-**Both paths:** with no form and no sheet, `bash bin/intake.sh` prints `skip empty` and exits `0` —
+**Both paths:** with no form and no sheet, `bash extensions/vault-intake/intake.sh` prints `skip empty` and exits `0` —
 that is the correct quiet answer, not a failure.
 
 ### 6.5 Credential directory permissions
@@ -319,11 +319,11 @@ what they can do first. Do not skip it because the install looked routine.
 Add this to how you operate after install (it is a rule for **you**, not for the user):
 
 > 사용자가 "인입"이라고 말하지 않아도, (a) 새 대화의 첫머리와 (b) 로그인이 필요한 순간마다
-> `bash bin/intake.sh`를 한 번 실행해 채워진 행을 확인하고, 있으면 적용한 뒤
+> `bash extensions/vault-intake/intake.sh`를 한 번 실행해 채워진 행을 확인하고, 있으면 적용한 뒤
 > `ok … cleared=yes` 결과만 요약해 알린다. 없으면 `skip empty`이므로 아무 말도 하지 않는다.
 >
 > At the start of every conversation, and whenever a login is needed, run
-> `bash bin/intake.sh` once. It uses the sheet when one is configured and readable, otherwise the
+> `bash extensions/vault-intake/intake.sh` once. It uses the sheet when one is configured and readable, otherwise the
 > local form. If rows were waiting, store them and report only a short summary
 > (`ok site=… cleared=yes`). On `skip empty`, say nothing — it costs the user
 > nothing to check, and nothing to stay quiet.
@@ -340,7 +340,7 @@ then ask them to change that password.
 | `N shared libraries missing` | `python3 vendor/fetch_chrome_deps.py` (needs `dpkg-deb`; Debian-based images) |
 | `node not found` | `.tools/node/bin` is added by `pu-config.sh`; re-run `pickle-bootstrap.sh` |
 | `awk: not found` / blank `elapsed_s` | `pickle-bootstrap.sh` links `mawk` as `awk`; harmless for results |
-| `fail code=gog` on the sheet | Google is not connected or lacks Sheets access — switch to `bash bin/vault-form.sh` (one line to the user, no retry loop) |
+| `fail code=gog` on the sheet | Google is not connected or lacks Sheets access — switch to `bash extensions/vault-intake/vault-form.sh` (one line to the user, no retry loop) |
 | `429` / quota from Sheets that survives the built-in retry | same: go to `vault-form`; do not retry the sheet in a loop |
 | the user says the form file will not open | re-send as `--format csv`, once; then `--format xlsx` only if `openpyxl` imports |
 | `keep file=… reason=pending` | a row failed (incomplete/chars/store) — fix that row, re-run once, then confirm the file is gone |

@@ -2,9 +2,9 @@
 # vault-sheet-init.sh — create (or top up) the user's private intake sheet.
 #
 # Run ONCE after install, with the installing agent's own user:
-#   bash bin/vault-sheet-init.sh                 # read the agent's vault login list
-#   bash bin/vault-sheet-init.sh --new           # force a fresh sheet
-#   bash bin/vault-sheet-init.sh --from-json f   # offline/test source
+#   bash extensions/vault-intake/vault-sheet-init.sh                 # read the agent's vault login list
+#   bash extensions/vault-intake/vault-sheet-init.sh --new           # force a fresh sheet
+#   bash extensions/vault-intake/vault-sheet-init.sh --from-json f   # offline/test source
 #
 # What ends up in the sheet:
 #   tab "in"   A: 사이트   B: 아이디 (prefilled from the vault)   C: 비밀번호 (empty, user fills)
@@ -16,5 +16,5 @@
 # Exit codes: 0 ok/skip · 1 fail (see the one-line result)
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$HERE/pu-config.sh"
+. "$HERE/../../bin/pu-config.sh"
 exec python3 "$HERE/vault_sheet.py" init "$@"

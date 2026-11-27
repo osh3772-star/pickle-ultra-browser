@@ -46,8 +46,10 @@ import subprocess
 import sys
 import time
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "bin"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))   # extensions/vault-intake -> tree root
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(REPO, "bin"))
 import pu_config  # noqa: E402
 
 NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$")

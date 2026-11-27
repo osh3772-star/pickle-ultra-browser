@@ -36,11 +36,13 @@ import subprocess
 import sys
 import time
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "bin"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))   # extensions/vault-intake -> tree root
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(REPO, "bin"))
 import pu_config  # noqa: E402
 
-VAULT = os.environ.get("PICKLE_ULTRA_VAULT") or os.path.join(BASE, "agent-vault", "vault.py")
+VAULT = os.environ.get("PICKLE_ULTRA_VAULT") or os.path.join(REPO, "agent-vault", "vault.py")
 NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$")
 RATE_MARKERS = ("rate_limited", "429", "quota", "RESOURCE_EXHAUSTED")
 HEADER = ["사이트", "아이디", "비밀번호"]
