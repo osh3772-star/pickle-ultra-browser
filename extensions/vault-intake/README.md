@@ -59,10 +59,11 @@ never overwrites a column B already there, and appends only sites that are new.
 - Values only ever move through stdin/pipe into `agent-vault`; no command prints one.
 - A row counts as filled only when its password cell is non-empty (the username is pre-filled
   by the plugin, so an empty password is "not yet", never an error).
-- After intake the source is cleared and read back: sheet cells B:C, or the file row (bytes
-  zeroed first). The form file plus its same-named copies under `attachments/` are then zeroed
-  and deleted. A row that failed to store is cleared the same way and reported as
-  `fail code=… row=<n> cleared=yes`, so no value waits on disk; ask the user to fill it again.
+- After intake the password is cleared and read back: sheet cell C (keeping pre-filled
+  username in B), or the file row's password column (bytes zeroed first). The form file
+  plus its same-named copies under `attachments/` are then zeroed and deleted. A row that
+  failed to store is cleared the same way and reported as `fail code=… row=<n> cleared=yes`,
+  so no password waits on disk; ask the user to fill it again.
   `cleared=no` alone means a value may still be there: shred it first, then report.
 - The plugin never reads a password from the vault, and never writes one into a page.
 

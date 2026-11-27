@@ -9,9 +9,9 @@
 //          phone and sends it back; no Google account needed)
 //
 // Values are never printed, never logged, and never written to a temp file.
-// Once a row is handled, its username/password cells are cleared (sheet) or the
-// row is rewritten with the site only (file) and read back to confirm — a row
-// that failed to store is cleared the same way, so no value is left waiting on
+// Once a row is handled, only its password cell is cleared (sheet) or the
+// row is rewritten with site + username only (file) and read back to confirm — a row
+// that failed to store is cleared the same way, so no password is left waiting on
 // disk. The form file and its copies under attachments/ are then shredded and
 // deleted, and a failed row is reported so it can be filled in again.
 //
@@ -71,7 +71,7 @@ async function storeValue(name, user, password) {
 }
 
 async function clearSheetRow(sheetId, rowNo, gogBin, tab) {
-  const rng = `${tab}!B${rowNo}:C${rowNo}`;
+  const rng = `${tab}!C${rowNo}`;
   const cleared = await runGog(["sheets", "clear", sheetId, rng], gogBin);
   if (cleared.code) return false;
   const got = await readSheet3(sheetId, rng, gogBin);
@@ -148,7 +148,7 @@ async function handleFile(file, attachmentsDir) {
     else if (!(await storeValue(name, user, password))) failure = "store";
     // Clear the row in the file whatever happened: a value that could not be
     // stored must not stay on disk waiting for a retry.
-    rows[idx] = [siteRaw, "", ""];
+    rows[idx] = [siteRaw, userRaw, ""];
     try {
       await writeFormRows(file, rows, kind);
     } catch {
@@ -165,7 +165,6 @@ async function handleFile(file, attachmentsDir) {
     const probe = idx < back.length ? back[idx] : ["", "", ""];
     let cleared = "yes";
     if (
-      (probe[1] || "").trim() ||
       (probe[2] || "").trim() ||
       (probe[0] || "").trim() !== (siteRaw || "").trim()
     ) {

@@ -517,7 +517,7 @@ async function storeValue(name, user, password) {
   }
 }
 async function clearSheetRow(sheetId, rowNo, gogBin, tab) {
-  const rng = `${tab}!B${rowNo}:C${rowNo}`;
+  const rng = `${tab}!C${rowNo}`;
   const cleared = await runGog(["sheets", "clear", sheetId, rng], gogBin);
   if (cleared.code) return false;
   const got = await readSheet3(sheetId, rng, gogBin);
@@ -586,7 +586,7 @@ async function handleFile(file, attachmentsDir) {
     else if (!name) failure = "site";
     else if (/[\t\r\n]/.test(user) || /[\t\r\n]/.test(password)) failure = "chars";
     else if (!await storeValue(name, user, password)) failure = "store";
-    rows[idx] = [siteRaw, "", ""];
+    rows[idx] = [siteRaw, userRaw, ""];
     try {
       await writeFormRows(file, rows, kind);
     } catch {
@@ -602,7 +602,7 @@ async function handleFile(file, attachmentsDir) {
     }
     const probe = idx < back.length ? back[idx] : ["", "", ""];
     let cleared = "yes";
-    if ((probe[1] || "").trim() || (probe[2] || "").trim() || (probe[0] || "").trim() !== (siteRaw || "").trim()) {
+    if ((probe[2] || "").trim() || (probe[0] || "").trim() !== (siteRaw || "").trim()) {
       cleared = "no";
     }
     if (failure) {
