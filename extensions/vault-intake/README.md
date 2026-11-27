@@ -95,3 +95,7 @@ stays Python (Fernet), and it is called as a CLI with the value on stdin.
   agent can send the image to the user right away.
 - Once the user replies with the answer, submit it on the same live page via
   `node bin/vault-login.mjs --captcha-answer <text> --space <name>`.
+- **Host constraint**: Keeping the live CAPTCHA tab across turns requires a persistent
+  host daemon (e.g., H255 or a normal Linux VM). In ephemeral sandboxed `shell` runners
+  that reap background processes between calls, route multi-turn CAPTCHA/2FA logins to
+  the host's persistent browser instead.
