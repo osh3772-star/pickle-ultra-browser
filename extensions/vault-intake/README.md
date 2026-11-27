@@ -84,3 +84,14 @@ lib.mjs                 shared helpers: gog + 20 s retry, JSON walkers, normaliz
 
 Everything here is plain Node ESM with no npm dependencies. Only `agent-vault/vault.py`
 stays Python (Fernet), and it is called as a CLI with the value on stdin.
+
+## Login & CAPTCHA Screenshot Harness (`bin/vault-login.mjs`)
+
+- `node bin/vault-login.mjs <url> <vault-site>` reads credentials inside the daemon
+  without printing secrets, fills and submits the form, and returns JSON.
+- If a CAPTCHA (e.g., Naver receipt verification) appears after submit, it keeps the
+  task space alive, saves a screenshot (`browser/captcha-<site>.png` by default), and
+  returns `{"ok":false,"status":"captcha","space":"...","screenshot":"..."}` so the
+  agent can send the image to the user right away.
+- Once the user replies with the answer, submit it on the same live page via
+  `node bin/vault-login.mjs --captcha-answer <text> --space <name>`.
