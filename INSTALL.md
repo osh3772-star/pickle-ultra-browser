@@ -160,7 +160,7 @@ When the user says the cells are filled: `bash extensions/vault-intake/intake.sh
 ```bash
 bash extensions/vault-intake/vault-form.sh                  # $PICKLE_ULTRA_HOME/inbox.tsv, mode 600
 bash extensions/vault-intake/vault-form.sh --format csv     # same table, widest phone support
-bash extensions/vault-intake/vault-form.sh --format xlsx    # only if python 'openpyxl' is installed
+bash extensions/vault-intake/vault-form.sh --format xlsx    # needs python3 + openpyxl (clear fail without it)
 ```
 
 It reads the same vault metadata and writes the same three columns (사이트 / 아이디 / 비밀번호)
@@ -188,7 +188,7 @@ ask the user to refill **only that row** — never leave a value on disk for a r
 | sheet creation fails (`fail code=gog …`) | go to path 2, once | same one line, with the reason in one clause |
 | `sheets.googleapis.com` 429 that persists after the built-in retry (one retry, 20 s) | go to path 2 | "구글이 잠시 막혀서 파일로 대신합니다." |
 | the user says they do not want a Google sheet | go to path 2 | accept it; do not re-ask |
-| the returned file will not open (TSV) | re-send as CSV, once; then XLSX if `openpyxl` exists | "폰에서 안 열리면 이 파일로 다시 보내 드릴게요." |
+| the returned file will not open (TSV) | re-send as CSV, once; then XLSX if python3 + `openpyxl` exist | "폰에서 안 열리면 이 파일로 다시 보내 드릴게요." |
 | the returned file still cannot be read | stop: give the site / username list only (no values, social-login sites marked) | "이 사이트들은 비밀번호 없이 소셜 로그인입니다" |
 
 Every step down is **one** attempt, reported in one line. Do not retry the same form twice.
@@ -245,7 +245,7 @@ echo "exit=$?"
 **Path 1, sheet:**
 
 ```bash
-python3 extensions/vault-intake/vault_sheet.py status                                   # listed=<n> waiting=0
+bash extensions/vault-intake/vault-sheet-status.sh                                      # listed=<n> waiting=0
 ```
 
 **Pass:** `waiting=0` right after step 5, `listed` equal to the number of rows written.
@@ -257,7 +257,7 @@ bash extensions/vault-intake/intake.sh --source sheet
 ```
 
 **Pass:** one line per row, `ok site=<site> row=<n> cleared=yes`, exit `0`. Then
-`python3 extensions/vault-intake/vault_sheet.py status` shows `waiting=0` again, and `python3 agent-vault/vault.py list`
+`bash extensions/vault-intake/vault-sheet-status.sh` shows `waiting=0` again, and `python3 agent-vault/vault.py list`
 shows the site. Never print what was stored.
 
 **Path 2, file:**
@@ -368,7 +368,7 @@ The plugin's own reference — commands, requirements, fallback summary, files �
 | `awk: not found` / blank `elapsed_s` | `pickle-bootstrap.sh` links `mawk` as `awk`; harmless for results |
 | `fail code=gog` on the sheet | Google is not connected or lacks Sheets access — switch to `bash extensions/vault-intake/vault-form.sh` (one line to the user, no retry loop) |
 | `429` / quota from Sheets that survives the built-in retry | same: go to `vault-form`; do not retry the sheet in a loop |
-| the user says the form file will not open | re-send as `--format csv`, once; then `--format xlsx` only if `openpyxl` imports |
+| the user says the form file will not open | re-send as `--format csv`, once; then `--format xlsx` only if python3 + `openpyxl` import |
 | `fail code=… row=<n> cleared=yes` on a file | that row could not be stored (incomplete/chars/site/store); its value was shredded — ask the user to refill only that row |
 | `fail code=read` / `range` from intake | transient rate limit — it waits 20 s and retries once; wait and re-run |
 | `403`/`429` from a target site | reported as `F-IP` — that is the answer, not an install failure |

@@ -4,8 +4,8 @@
 # Use when the agent's Google account is not connected, so the private sheet
 # cannot be created or read: the same three columns (사이트 / 아이디 / 비밀번호)
 # travel as a file that the user opens on their own phone, fills in the
-# password column only, and sends back through chat. `extensions/vault-intake/intake.sh` (or
-# `intake_all.py --source file`) imports it into the vault and shreds it.
+# password column only, and sends back through chat. `extensions/vault-intake/intake.sh`
+# (or `intake-all.mjs --source file`) imports it into the vault and shreds it.
 #
 #   bash extensions/vault-intake/vault-form.sh                       # .tsv at $PICKLE_ULTRA_HOME/inbox.tsv
 #   bash extensions/vault-intake/vault-form.sh --format csv          # widest app support
@@ -20,4 +20,5 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/../../bin/pu-config.sh"
-exec python3 "$HERE/vault_form.py" "$@"
+NODE="$(pu_node)" || { echo "fail code=node reason=node-not-found"; exit 1; }
+exec "$NODE" "$HERE/vault-form.mjs" "$@"

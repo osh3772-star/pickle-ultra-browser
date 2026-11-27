@@ -20,8 +20,21 @@ if [ -f "$PU_HOME/config.env" ]; then
 fi
 
 export PATH="$PU_TOOLS/node/bin:$PU_TOOLS/bin:$PATH"
-# No node warning here: the vault-intake plugin sources this file and does not
-# need node. run.sh warns for itself (see "node missing" there).
+# No node warning here: run.sh warns for itself (see "node missing" there).
+# The intake plugin (extensions/vault-intake/*.mjs) needs node; it asks this
+# helper rather than assuming PATH, so a tree with node in $PU_TOOLS still works
+# from a shell that did not inherit this PATH.
+pu_node() {
+  local c
+  for c in "${PU_NODE:-}" "${PICKLE_ULTRA_NODE:-}"; do
+    [ -n "$c" ] && [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
+  done
+  c="$(command -v node 2>/dev/null || true)"
+  [ -n "$c" ] && [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
+  c="$PU_TOOLS/node/bin/node"
+  [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
+  return 1
+}
 
 # awk is used for elapsed_s. Some slim images ship mawk without the awk name;
 # link it into $PU_TOOLS/bin once instead of failing every timing call.

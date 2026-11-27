@@ -18,4 +18,5 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/../../bin/pu-config.sh"
-exec python3 "$HERE/vault_sheet.py" status "$@"
+NODE="$(pu_node)" || { echo "fail code=node reason=node-not-found"; exit 1; }
+exec "$NODE" "$HERE/vault-sheet.mjs" status "$@"

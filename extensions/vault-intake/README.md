@@ -39,7 +39,9 @@ never overwrites a column B already there, and appends only sites that are new.
 - Sheet path: a connected Google account with Sheets access through `gog`
   (`PU_GOG` can point at another binary), plus `vault` on `PATH` or `PU_VAULT_CLI`
   pointing at something that answers `vault logins` with `{site, username, password, method}`.
-- File path: none beyond python3 — the user needs an app that opens `.tsv`, `.csv` or `.xlsx`.
+- File path: Node.js ≥ 22 (already required by the harness core) — the user needs an app that
+  opens `.tsv`, `.csv` or `.xlsx`. The optional XLSX form needs python3 with `openpyxl`;
+  without it the command prints `fail code=write reason=xlsx-unavailable` and TSV/CSV still work.
 - `PICKLE_ULTRA_HOME` (default: the repository root) is where `inbox.*` lives, mode 0600,
   git-ignored.
 
@@ -67,12 +69,17 @@ never overwrites a column B already there, and appends only sites that are new.
 ## Files
 
 ```
-v vault-sheet-init.sh   thin wrapper → vault_sheet.py init
-vault_sheet.py          sheet builder + status (formatting, verify, idempotency)
-vault-form.sh           thin wrapper → vault_form.py
-vault_form.py           local form writer (tsv/csv/xlsx) + reader used by intake
-intake.sh               thin wrapper → intake_all.py
-intake_all.py           sheet/file intake, clearing, shredding, deletion
-vault-sheet-status.sh   counts-only "should I run intake now?"
-selftest-intake.sh      wrapper → selftest_intake.py (two throwaway profiles)
+vault-sheet-init.sh     thin wrapper → vault-sheet.mjs init
+vault-sheet-status.sh   counts-only "should I run intake now?" → vault-sheet.mjs status
+vault-sheet.mjs         sheet builder + status (formatting, verify, idempotency)
+vault-form.sh           thin wrapper → vault-form.mjs
+vault-form.mjs          local form writer (tsv/csv, xlsx with python3+openpyxl) + reader
+intake.sh               thin wrapper → intake-all.mjs
+intake-all.mjs          sheet/file intake, clearing, shredding, deletion
+selftest-intake.sh      wrapper → selftest-intake.mjs (two throwaway profiles)
+lib.mjs                 shared helpers: gog + 20 s retry, JSON walkers, normalizeSite,
+                        config file, TSV/CSV, shred, argument reader
 ```
+
+Everything here is plain Node ESM with no npm dependencies. Only `agent-vault/vault.py`
+stays Python (Fernet), and it is called as a CLI with the value on stdin.

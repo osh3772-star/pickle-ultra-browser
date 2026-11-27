@@ -134,7 +134,7 @@ overridable with `PU_CONFIG_DIR`):
 ```
 bin/          run.sh chain.sh fetch.sh detect-code.sh doctor.sh selftest.sh
               cdp-daemon.mjs cdp-client.mjs snaptrim.py html2text.py routecache.py
-              batch.sh chrome-wrapper.sh pu-config.sh pu_config.py idle-stop.sh
+              batch.sh chrome-wrapper.sh pu-config.sh pu-config.mjs idle-stop.sh
 agent-vault/  vault.py (encrypted store; keys/ and entries/ are gitignored)
 extensions/   vault-intake/  optional: automatic intake (Sheet or file), + selftest-intake.sh
 vendor/       fetch_chrome_deps.py (Chromium shared libraries, no root)

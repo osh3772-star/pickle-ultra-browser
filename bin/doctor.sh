@@ -53,7 +53,7 @@ if command -v python3 >/dev/null 2>&1; then
     bad "crypto-lib" "python module 'cryptography' missing — agent-vault cannot encrypt (pip install cryptography)" 0
   fi
 else
-  bad "python3" "python3 not found (snaptrim.py / html2text.py / routecache.py / intake need it)" 1
+  bad "python3" "python3 not found (snaptrim.py / html2text.py / routecache.py / agent-vault need it)" 1
 fi
 
 if command -v curl >/dev/null 2>&1; then ok "curl" "present (L0 fetch.sh)"

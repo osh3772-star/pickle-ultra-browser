@@ -7,7 +7,7 @@
 #   bash extensions/vault-intake/intake.sh --source file --file P   # a specific returned form
 #   bash extensions/vault-intake/intake.sh --test                   # same, but with a throwaway row, then cleanup
 #
-# Two sources, one rule: the values travel gog stdout / file -> python stdin
+# Two sources, one rule: the values travel gog stdout / file -> vault stdin
 # only, are never printed or logged, and the row is cleared once it is stored.
 # With --source file and every row stored, the form and its copies under
 # attachments/ are shredded and deleted (pass --attachments-dir for a chat
@@ -21,10 +21,6 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/../../bin/pu-config.sh"
+NODE="$(pu_node)" || { echo "fail code=node reason=node-not-found"; exit 1; }
 GOG="${PU_GOG:-gog}"
-
-SHEET_ID=$(python3 "$PU_HOME/bin/pu_config.py" get sheet_id 2>/dev/null || true)
-RANGE=$(python3 "$PU_HOME/bin/pu_config.py" get sheet_range 2>/dev/null || true)
-RANGE="${RANGE:-in!A2:C200}"
-
-exec python3 "$HERE/intake_all.py" --sheet-id "$SHEET_ID" --range "$RANGE" --gog "$GOG" "$@"
+exec "$NODE" "$HERE/intake-all.mjs" --gog "$GOG" "$@"

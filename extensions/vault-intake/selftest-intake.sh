@@ -5,7 +5,7 @@
 # 8 student-id + social logins with 0 passwords), builds a REAL private sheet
 # for each with `vault-sheet-init.sh`, re-runs it to prove idempotency, adds a
 # login to prove only the new row is appended, fills two password cells the way
-# the user would, runs `intake_all --source sheet`, and checks that the cells
+# the user would, runs `intake-all --source sheet`, and checks that the cells
 # are cleared and the values landed in a throwaway vault.
 #
 # Everything it creates is removed afterwards (sheets to the trash, temp dirs
@@ -19,4 +19,5 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/../../bin/pu-config.sh"
-exec python3 "$HERE/selftest_intake.py" "$@"
+NODE="$(pu_node)" || { echo "fail code=node reason=node-not-found"; exit 1; }
+exec "$NODE" "$HERE/selftest-intake.mjs" "$@"
