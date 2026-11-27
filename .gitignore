@@ -1,0 +1,26 @@
+# Runtime state and secrets — never commit any of these.
+.state/
+.tmp/
+.tools/
+profile/
+chrome-home/
+downloads/
+
+# Credential store: ciphertext, key and metadata
+agent-vault/keys/
+agent-vault/entries/
+agent-vault/meta.json
+
+# Local configuration (may contain a sheet id)
+config.env
+
+# Local intake form (filled on the user's phone, may hold values until intake)
+inbox.tsv
+inbox.csv
+inbox.*.tmp
+
+# Python / editor noise
+__pycache__/
+*.pyc
+*.swp
+.DS_Store
