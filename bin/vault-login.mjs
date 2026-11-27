@@ -23,6 +23,7 @@ const args = process.argv.slice(2);
 let url = null, site = null;
 let idSel = null, pwSel = null, submitSel = null, captchaSel = null;
 let shotPath = null, spaceName = null, captchaAnswer = null;
+let waitAnswerFile = null, stateFile = null, waitTimeout = 240;
 
 const pos = [];
 for (let i = 0; i < args.length; i++) {
@@ -34,6 +35,9 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--shot') shotPath = args[++i];
   else if (a === '--space') spaceName = args[++i];
   else if (a === '--captcha-answer') captchaAnswer = args[++i];
+  else if (a === '--wait-answer-file') waitAnswerFile = args[++i];
+  else if (a === '--state-file') stateFile = args[++i];
+  else if (a === '--wait-timeout') waitTimeout = Math.max(10, Number(args[++i]) || 240);
   else pos.push(a);
 }
 
@@ -57,6 +61,10 @@ if (!captchaAnswer) {
 
 const absShot = resolve(shotPath);
 mkdirSync(dirname(absShot), { recursive: true });
+const absWaitAnswer = waitAnswerFile ? resolve(waitAnswerFile) : null;
+const absStateFile = stateFile ? resolve(stateFile) : null;
+if (absStateFile) mkdirSync(dirname(absStateFile), { recursive: true });
+if (absWaitAnswer) mkdirSync(dirname(absWaitAnswer), { recursive: true });
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function tryConnect() {
@@ -168,8 +176,50 @@ console.log(JSON.stringify({ ok: true, status: 'logged_in', after }));
   : `
 const { execFileSync } = await import('node:child_process');
 const fs = await import('node:fs');
-const CFG = ${JSON.stringify({ url, site, vaultPy: VAULT_PY, idSel, pwSel, submitSel, absShot, shotPath, spaceName })};
+const CFG = ${JSON.stringify({ url, site, vaultPy: VAULT_PY, idSel, pwSel, submitSel, captchaSel, absShot, shotPath, spaceName, absWaitAnswer, absStateFile, waitTimeout })};
 ${DETECT_FN}
+const writeState = (obj) => {
+  if (!CFG.absStateFile) return;
+  fs.writeFileSync(CFG.absStateFile, JSON.stringify({ ...obj, updatedAt: Date.now() }));
+};
+const submitCaptchaOnPage = async (p, ans) => {
+  const filled = await p.evaluate((sel) => {
+    const vis = (el) => {
+      if (!el) return false;
+      const st = getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden') return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const el = sel
+      ? document.querySelector(sel)
+      : ([...document.querySelectorAll('input#captcha, input[name*="captcha" i], input[id*="captcha" i], input[type="text"]')].find(vis) || null);
+    if (!el) return false;
+    el.value = '';
+    el.focus();
+    return true;
+  }, CFG.captchaSel);
+  if (!filled) return false;
+  await p.cdp('Input.insertText', { text: ans });
+  await new Promise(r => setTimeout(r, 300));
+  const clicked = await p.evaluate((sel) => {
+    const vis = (el) => {
+      if (!el) return false;
+      const st = getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden') return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const btn = sel
+      ? document.querySelector(sel)
+      : (document.getElementById('log.login') || [...document.querySelectorAll('button[type="submit"], input[type="submit"], button.btn_login, button')].find(b => vis(b) && /confirm|확인|로그인|submit|sign in/i.test((b.innerText || b.value || ''))));
+    if (btn) { btn.click(); return true; }
+    return false;
+  }, CFG.submitSel);
+  if (!clicked) await p.press('Enter').catch(() => {});
+  await new Promise(r => setTimeout(r, 4500));
+  return true;
+};
 const space = await taskSpace(CFG.spaceName);
 const p = await space.newPage('main');
 let keepForCaptcha = false;
@@ -245,15 +295,47 @@ try {
   if (!fillResult.clickedSubmit) await p.press('Enter').catch(() => {});
   await new Promise(r => setTimeout(r, 4500));
 
-  const after = await p.evaluate(detectState);
+  let after = await p.evaluate(detectState);
+  if (after.isCaptcha && CFG.absWaitAnswer) {
+    let attempt = 1;
+    const deadline = Date.now() + CFG.waitTimeout * 1000;
+    while (after.isCaptcha && Date.now() < deadline) {
+      const b64 = await p.screenshot();
+      fs.writeFileSync(CFG.absShot, Buffer.from(b64, 'base64'));
+      writeState({ ok: false, status: 'captcha', attempt, screenshot: CFG.shotPath, after });
+      let ans = null;
+      while (Date.now() < deadline) {
+        if (fs.existsSync(CFG.absWaitAnswer)) {
+          const txt = fs.readFileSync(CFG.absWaitAnswer, 'utf8').trim();
+          try { fs.unlinkSync(CFG.absWaitAnswer); } catch {}
+          if (txt) { ans = txt; break; }
+        }
+        await new Promise(r => setTimeout(r, 500));
+      }
+      if (!ans) {
+        writeState({ ok: false, status: 'captcha_timeout', screenshot: CFG.shotPath, after });
+        console.log(JSON.stringify({ ok: false, status: 'captcha_timeout', screenshot: CFG.shotPath, after }));
+        return;
+      }
+      await submitCaptchaOnPage(p, ans);
+      after = await p.evaluate(detectState);
+      attempt += 1;
+    }
+    const ok = !after.hasPasswordField && !after.isCaptcha && !/errorcode=/.test(after.url);
+    writeState({ ok, status: ok ? 'logged_in' : 'login_failed', after });
+    console.log(JSON.stringify({ ok, status: ok ? 'logged_in' : 'login_failed', beforeUrl: fillResult.beforeUrl, after }));
+    return;
+  }
   if (after.isCaptcha) {
     keepForCaptcha = true;
     const b64 = await p.screenshot();
     fs.writeFileSync(CFG.absShot, Buffer.from(b64, 'base64'));
+    writeState({ ok: false, status: 'captcha', space: CFG.spaceName, screenshot: CFG.shotPath, after });
     console.log(JSON.stringify({ ok: false, status: 'captcha', space: CFG.spaceName, screenshot: CFG.shotPath, beforeUrl: fillResult.beforeUrl, after }));
     return;
   }
   const ok = !after.hasPasswordField && !/errorcode=/.test(after.url);
+  writeState({ ok, status: ok ? 'logged_in' : 'login_failed', after });
   console.log(JSON.stringify({ ok, status: ok ? 'logged_in' : 'login_failed', beforeUrl: fillResult.beforeUrl, after }));
 } finally {
   if (!keepForCaptcha) await space.finish({ keep: [] }).catch(() => {});
