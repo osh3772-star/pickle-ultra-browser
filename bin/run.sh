@@ -5,6 +5,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/pu-config.sh"
 . "$HERE/detect-code.sh"
+command -v node >/dev/null 2>&1 || \
+  echo "run.sh: node not found — run pickle-bootstrap.sh first ($PU_TOOLS/node/bin)" >&2
 
 usage() {
   cat <<'USAGE'

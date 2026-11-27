@@ -33,12 +33,11 @@ to its user right away.
 - **Three lanes** (`bin/chain.sh`): L0 is curl + stdlib HTML→text (about a second, no
   browser). L1 is the raw-CDP read. There is deliberately no L2: when L1 is blocked the
   harness reports it and stops.
-- **A private intake sheet — or a file the user fills in.** `extensions/vault-intake/vault-sheet-init.sh` builds a
-  per-user Google Sheet (when the agent's Google account is connected) whose column A already
-  lists the sites from the vault and whose column B already holds the username. The user types
-  only the password, and `extensions/vault-intake/intake.sh` moves it into the encrypted vault and wipes the cells.
-  Without a connected Google account, `extensions/vault-intake/vault-form.sh` writes the same three columns to a
-  local file (`.tsv`/`.csv`) that the user fills in on their own phone and sends back.
+- **Encrypted credential vault** (`agent-vault/`): values are stored Fernet-encrypted and never
+  printed. **Automatic intake** — the user fills a private Google Sheet, or a form file sent
+  back in chat — is an optional plugin under `extensions/vault-intake/`; see
+  [its README](extensions/vault-intake/README.md). A harness without the plugin still works,
+  the vault is just filled by hand.
 
 ## What this is not
 
@@ -89,36 +88,55 @@ bin/run.sh batch-urls urls.txt
 | `F-TIMEOUT`, `F-NET` | the page never answered | `none` (retry or hand over) |
 | `F-SELECTOR` | the ref or CSS selector matched nothing | `none` |
 
-## The vault and the intake sheet
+## Credential vault
 
-Credentials are the one thing this harness is careful about.
+`agent-vault/vault.py` keeps values **Fernet-encrypted** at rest
+(`agent-vault/entries/<name>.enc`, mode 0600; key `agent-vault/keys/vault.key`, 0600).
+A value enters only through **stdin or a file the user placed**, never as a command-line
+argument, and `store --from-file` shreds that file as part of the same command. `use`
+decrypts in memory and hands the value to a child command through its environment
+(`AGENT_VAULT_VALUE` by default) or stdin. **No command prints a value**; `list` shows names,
+purposes and dates only. Rotation is `store <name> --purpose … --force`; removal is
+`delete <name>` (shreds the file).
 
-- `agent-vault/vault.py` keeps values **Fernet-encrypted** at rest
-  (`agent-vault/entries/<name>.enc`, mode 0600; key `agent-vault/keys/vault.key`, 0600).
-  A value enters only through **stdin or a file the user placed**, never as a command-line
-  argument, and `store --from-file` shreds that file as part of the same command.
-  `use` decrypts in memory and hands the value to a child command through its environment
-  (`AGENT_VAULT_VALUE` by default) or stdin. **No command prints a value**; `list` shows
-  names, purposes and dates only.
-- The intake table is the only path a human uses: column A = site, column B = username
-  (pre-filled at install), column C = the password cell the user fills in. `extensions/vault-intake/intake.sh`
-  stores filled rows in the vault and clears B:C, leaving A in place.
-- Without a connected Google account the same table travels as a file: `extensions/vault-intake/vault-form.sh`
-  writes `$PICKLE_ULTRA_HOME/inbox.tsv` (or `.csv`) mode 0600, the user fills the password
-  column on their phone and sends the file back in chat, and `extensions/vault-intake/intake.sh --source file`
-  stores it, then zeroes and deletes that file and its `attachments/` copies.
-- Rotation is `store <name> --purpose … --force`; removal is `delete <name>` (shreds the
-  file). Neither prints anything.
+## Automatic credential intake (plugin)
+
+Getting a password from the user into that vault without a chat message is a separate, optional
+piece: [`extensions/vault-intake/`](extensions/vault-intake/README.md).
+
+```
+vault logins ──► sheet created, usernames pre-filled ──► user types only the password
+      (no Google account: a form file, filled on the user's phone and sent back)
+                                                              │
+        vault <── values stored, cells/file cleared or shredded ◄┘
+```
+
+- **Requirements:** Google path — a connected Google account with Sheets access (`gog`), nothing
+  else. File path — none; a phone that can open `.tsv`, `.csv` or `.xlsx`.
+- **Fallback:** sheet first; if Google is unavailable, refused, rate-limited past one retry, or the
+  user declines, the table travels as a file once (TSV → CSV → XLSX, one attempt each).
+- **Boundary:** values move through stdin/pipe only, are never printed, and the source is cleared
+  (sheet cells) or zeroed and deleted (file, attachment copies) right after intake.
+- **One command proves it:** `bash extensions/vault-intake/selftest-intake.sh` builds throwaway
+  sheets for two different fake profiles, round-trips them, and trashes everything.
+
+The plugin reads three keys from `~/.config/pickle-ultra/config.json` (mode 0600,
+overridable with `PU_CONFIG_DIR`):
+
+| key | meaning | default |
+|---|---|---|
+| `sheet_id` | the sheet the plugin created (plus `sheet_url`) | empty → the file path is used |
+| `sheet_tab`, `sheet_range` | where rows are read and cleared | `in`, `in!A2:C200` |
+| `agent_name` | appears in the sheet title `<agent> 인입 (자동 파쇄)` | `Pickle Ultra` |
 
 ## Layout
 
 ```
 bin/          run.sh chain.sh fetch.sh detect-code.sh doctor.sh selftest.sh
               cdp-daemon.mjs cdp-client.mjs snaptrim.py html2text.py routecache.py
-              batch.sh chrome-wrapper.sh pu-config.sh idle-stop.sh
-              vault-sheet-init.sh vault_sheet.py vault-form.sh vault_form.py
-              intake.sh intake_all.py pu_config.py
+              batch.sh chrome-wrapper.sh pu-config.sh pu_config.py idle-stop.sh
 agent-vault/  vault.py (encrypted store; keys/ and entries/ are gitignored)
+extensions/   vault-intake/  optional: automatic intake (Sheet or file), + selftest-intake.sh
 vendor/       fetch_chrome_deps.py (Chromium shared libraries, no root)
 config.env.example
 pickle-bootstrap.sh   node + chromium + libs + awk, then a smoke test
@@ -152,9 +170,8 @@ Install configuration (sheet id, agent name) lives in
   `browser_fill_secret` 몫이고, 이 하네스는 비밀번호 칸을 아예 채우지 않습니다.
 - **자격증명**: `agent-vault`에 Fernet 암호문으로만 저장하고, 값은 표준입출력 파이프로만
   흐르며 출력·로그·대화에 남지 않습니다. 삭제는 `delete`, 교체는 `store --force`.
-- **인입 시트**: 설치 직후 `extensions/vault-intake/vault-sheet-init.sh`가 사용자 구글 계정에 **비공개 시트**를
-  만들고, A열에 사이트, **B열에 아이디를 미리 채워** 둡니다. 사용자는 **비밀번호 칸(C열)만**
-  채우면 되고, `extensions/vault-intake/intake.sh`가 볼트로 옮긴 뒤 B:C를 지웁니다.
+- **인입(선택 플러그인)**: `extensions/vault-intake/`가 비공개 구글 시트(또는 연동이 없으면 파일 왕복)로
+  비밀번호만 받아 볼트에 넣고 원본을 지웁니다 — 자세한 것은 플러그인 README.
 - **한계**: 데이터센터 IP라 Cloudflare Managed Challenge는 통과하지 못합니다(정상 동작입니다).
 
 설치·검증 절차는 [INSTALL.md](INSTALL.md), 설치 직후 사용자에게 할 고지는

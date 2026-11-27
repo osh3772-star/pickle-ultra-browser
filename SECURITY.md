@@ -39,11 +39,12 @@ moves it — in a Google Sheet, or in the form file the user filled in on their 
   is. Never turn it into a public or link-shared document. Without a connected Google account
   there is no sheet: `extensions/vault-intake/vault-form.sh` writes the same three columns to
   `$PICKLE_ULTRA_HOME/inbox.tsv` (mode 0600) instead.
-- `extensions/vault-intake/intake.sh` clears column B:C of each sheet row it stored, or rewrites the file row with
-  the site only, and reads it back to check. When the file source was used and every row
-  succeeded, the file and its same-named copies under `attachments/` are zeroed and deleted.
-  If it prints `cleared=no` or `keep file=… reason=pending`, the value is still there: shred the
-  source first, tell the user, and treat the password as exposed in a document you control.
+- `extensions/vault-intake/intake.sh` clears column B:C of each sheet row it handles, or rewrites
+  the file row with the site only, and reads it back to check. The form file and its same-named
+  copies under `attachments/` are then zeroed and deleted; a row that failed to store is cleared
+  the same way, so no value is left behind for a retry.
+  If it prints `cleared=no`, the value is still there: shred the source first, tell the user, and
+  treat the password as exposed in a document you control.
 - The sheet never receives a value from this harness — only the user types into column C. The
   same goes for the file: only the user fills the password column, and the filled file comes
   back as a chat attachment, never as text in the conversation.

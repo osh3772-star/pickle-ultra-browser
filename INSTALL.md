@@ -175,10 +175,10 @@ bash extensions/vault-intake/intake.sh --source file --file <returned path> --at
 ```
 
 **Pass condition:** one `ok site=… row=<n> cleared=yes` line per filled row, exit `0`, then
-`shredded file=… removed=yes attachments=<n>`. The form and every same-named copy under
-`attachments/` are shredded (bytes zeroed, then deleted). If any row failed, the file is kept
-**with the failed row's values still in it only until you retry once** — a kept file prints
-`keep file=… reason=pending`; fix, re-run, then make sure the file is gone.
+`shredded file=… removed=yes attachments=<n> home=<n>`. The form and every same-named copy
+under `attachments/` are shredded (bytes zeroed, then deleted). A row that fails is reported as
+`fail code=… row=<n> cleared=yes`: its value is shredded too, the file is still deleted, and you
+ask the user to refill **only that row** — never leave a value on disk for a retry.
 
 ## 5.3 Fallback rules (move down one step, never loop)
 
@@ -290,6 +290,26 @@ stat -c '%a %n' agent-vault/keys agent-vault/entries 2>/dev/null || stat -f '%Lp
 **Pass:** both `700`. Otherwise `chmod 700 agent-vault/keys agent-vault/entries` and
 `chmod 600 agent-vault/keys/vault.key`.
 
+### 6.6 The intake harness itself (one command)
+
+```bash
+bash extensions/vault-intake/selftest-intake.sh
+echo "exit=$?"
+```
+
+**Pass:** exit `0` and `selftest-intake: PASS=14 FAIL=0`. It builds real throwaway sheets for two
+fake profiles (10 email-style logins with 10 usernames pre-filled; 8 student-id + social logins
+with 3), re-runs for idempotency (`created=no added=0`), appends one new login (`added=1`), fills
+two password cells, runs the sheet intake, checks the cells are cleared and the values are in a
+throwaway vault, then moves every sheet to the trash.
+
+**Skip:** exit `2` / `SKIP reason=no-google` — this agent has no Sheets access, so the install
+uses path 2; run `bash extensions/vault-intake/vault-form.sh` and `selftest` by hand with
+`--from-json` instead. That is not an install failure.
+
+**Do not** point this at the user's own sheet or vault: it creates its own config folder, its own
+vault and its own sheets.
+
 ## 7. Install completion condition
 
 You may call the installation complete only when **all** of these hold, in this order:
@@ -303,6 +323,7 @@ You may call the installation complete only when **all** of these hold, in this 
    or deleted (5, 6.4). If neither path could be built, say which one failed and why (one line),
    and do not describe a sheet as working when it was never read back.
 6. `agent-vault/keys` and `agent-vault/entries` are `700`, key file `600` (6.5)
+7. `selftest-intake.sh` → `PASS=14 FAIL=0`, or a reported `SKIP reason=no-google` (6.6)
 
 If any item fails and cannot be fixed, report the exact command, its exit code and its last
 line. Do not describe a partial install as complete.
@@ -319,18 +340,23 @@ what they can do first. Do not skip it because the install looked routine.
 Add this to how you operate after install (it is a rule for **you**, not for the user):
 
 > 사용자가 "인입"이라고 말하지 않아도, (a) 새 대화의 첫머리와 (b) 로그인이 필요한 순간마다
-> `bash extensions/vault-intake/intake.sh`를 한 번 실행해 채워진 행을 확인하고, 있으면 적용한 뒤
-> `ok … cleared=yes` 결과만 요약해 알린다. 없으면 `skip empty`이므로 아무 말도 하지 않는다.
+> `bash extensions/vault-intake/vault-sheet-status.sh`로 채워진 행(`waiting=`)을 먼저 보고,
+> 1 이상이면 `bash extensions/vault-intake/intake.sh`를 실행한다. 적용했으면
+> `ok … cleared=yes`만 요약해 알리고, `waiting=0`·`skip empty`이면 아무 말도 하지 않는다.
 >
 > At the start of every conversation, and whenever a login is needed, run
-> `bash extensions/vault-intake/intake.sh` once. It uses the sheet when one is configured and readable, otherwise the
-> local form. If rows were waiting, store them and report only a short summary
-> (`ok site=… cleared=yes`). On `skip empty`, say nothing — it costs the user
-> nothing to check, and nothing to stay quiet.
+> `bash extensions/vault-intake/vault-sheet-status.sh` first (counts only: `waiting=`, `unfilled=`,
+> `checked_at=`). If `waiting` is 1 or more, run `bash extensions/vault-intake/intake.sh` once —
+> it uses the sheet when one is configured and readable, otherwise the local form. Report only a
+> short summary (`ok site=… cleared=yes`). On `waiting=0` / `skip empty`, say nothing — it costs
+> the user nothing to check, and nothing to stay quiet.
 
-Never ask the user to paste a password into chat. The sheet is the path; if they paste one
-anyway, tell them plainly that chat keeps it in plain text and that the sheet replaces it,
-then ask them to change that password.
+Never ask the user to paste a password into chat. The sheet (or the file you sent) is the path;
+if they paste one anyway, tell them plainly that chat keeps it in plain text and that the sheet
+replaces it, then ask them to change that password.
+
+The plugin's own reference — commands, requirements, fallback summary, files — is
+[extensions/vault-intake/README.md](extensions/vault-intake/README.md).
 
 ## 10. Troubleshooting
 
@@ -343,8 +369,9 @@ then ask them to change that password.
 | `fail code=gog` on the sheet | Google is not connected or lacks Sheets access — switch to `bash extensions/vault-intake/vault-form.sh` (one line to the user, no retry loop) |
 | `429` / quota from Sheets that survives the built-in retry | same: go to `vault-form`; do not retry the sheet in a loop |
 | the user says the form file will not open | re-send as `--format csv`, once; then `--format xlsx` only if `openpyxl` imports |
-| `keep file=… reason=pending` | a row failed (incomplete/chars/store) — fix that row, re-run once, then confirm the file is gone |
+| `fail code=… row=<n> cleared=yes` on a file | that row could not be stored (incomplete/chars/site/store); its value was shredded — ask the user to refill only that row |
 | `fail code=read` / `range` from intake | transient rate limit — it waits 20 s and retries once; wait and re-run |
 | `403`/`429` from a target site | reported as `F-IP` — that is the answer, not an install failure |
 | `F-BOT` on a real site | Cloudflare Managed Challenge from a datacenter IP — **expected limit, not a failure**; hand the URL to your own browser |
 | `fail code=vault` in sheet init | no `vault` command in this environment, or the vault cannot be read; report and skip step 5 |
+| `selftest-intake: SKIP reason=no-google` | expected when the agent has no Sheets access — use `vault-form.sh`; not a failure |

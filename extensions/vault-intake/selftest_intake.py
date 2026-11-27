@@ -37,7 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 BIN = os.path.join(REPO, "bin")
 sys.path.insert(0, HERE)
-sys.path.insert(0, BIN)
+sys.path.insert(0, BIN)  # bin/pu-config.sh is sourced by the plugin scripts
 import vault_form  # noqa: E402  (xlsx-free: only used for its reader)
 
 GOG = os.environ.get("PU_GOG") or "gog"
@@ -59,7 +59,7 @@ PROFILE_A = {
         {"site": "music.example.com", "username": "first.last@example.com", "password": False},
         {"site": "forum.example.com", "username": "first.last@example.com", "password": False},
     ],
-    "expect_prefilled": 6,
+    "expect_prefilled": 10,
 }
 
 PROFILE_B = {
@@ -191,7 +191,7 @@ def profile_cycle(r: Runner, prof, root):
     })
 
     # 1) unattended build
-    rc, out = run(["bash", os.path.join(BIN, "vault-sheet-init.sh"),
+    rc, out = run(["bash", os.path.join(HERE, "vault-sheet-init.sh"),
                    "--gog", GOG, "--agent-name", prof["agent"]], env)
     fields = parse_line(out)
     if not fields.get("sheet_id"):
@@ -217,7 +217,7 @@ def profile_cycle(r: Runner, prof, root):
             "verify=%s format=%s" % (fields.get("verify"), fields.get("format")))
 
     # 2) idempotent re-run
-    rc, out = run(["bash", os.path.join(BIN, "vault-sheet-init.sh"),
+    rc, out = run(["bash", os.path.join(HERE, "vault-sheet-init.sh"),
                    "--gog", GOG, "--agent-name", prof["agent"]], env)
     fields2 = parse_line(out)
     r.check(tag + " idempotent",
@@ -232,7 +232,7 @@ def profile_cycle(r: Runner, prof, root):
                                "password": True})
     with open(prof_path, "w", encoding="utf-8") as f:
         json.dump(prof_new, f, ensure_ascii=False)
-    rc, out = run(["bash", os.path.join(BIN, "vault-sheet-init.sh"),
+    rc, out = run(["bash", os.path.join(HERE, "vault-sheet-init.sh"),
                    "--gog", GOG, "--agent-name", prof["agent"]], env)
     fields3 = parse_line(out)
     r.check(tag + " append only new",
@@ -244,7 +244,9 @@ def profile_cycle(r: Runner, prof, root):
     targets = [(i + 1, row[0]) for i, row in enumerate(rows[1:], start=1)
                if len(row) > 1 and row[1] and not (len(row) > 2 and row[2])][:2]
     if len(targets) < 2:
-        r.check(tag + " fill+intake", False, "no pre-filled rows to fill")
+        r.check(tag + " fill+intake", False,
+                "no pre-filled rows to fill (rows_read=%d prefilled=%d)"
+                % (len(rows), sum(1 for row in rows[1:] if len(row) > 1 and row[1])))
         return
     for (row_no, _site), token in zip(targets, (TOKEN_A, TOKEN_B)):
         gog(["sheets", "update", sheet_id, "in!C%d" % row_no,
@@ -259,13 +261,16 @@ def profile_cycle(r: Runner, prof, root):
 
     env_intake = dict(env)
     env_intake["PICKLE_ULTRA_VAULT"] = vault_py
-    rc, out = run([sys.executable, os.path.join(BIN, "intake_all.py"),
+    rc, out = run([sys.executable, os.path.join(HERE, "intake_all.py"),
                    "--source", "sheet", "--sheet-id", sheet_id,
                    "--range", "in!A2:C200", "--gog", GOG], env_intake)
     ok_lines = [l for l in out.splitlines() if l.startswith("ok site=")]
+    fails = [l for l in out.splitlines() if l.startswith("fail")]
+    good = [l for l in ok_lines if "cleared=yes" in l]
     r.check(tag + " intake round trip",
-            rc == 0 and len(ok_lines) == 2 and all("cleared=yes" in l for l in ok_lines),
-            "rows=%d exit=%d" % (len(ok_lines), rc))
+            rc == 0 and len(ok_lines) == 2 and len(good) == 2,
+            "rows=%d cleared=yes=%d exit=%d%s"
+            % (len(ok_lines), len(good), rc, (" " + fails[0]) if fails else ""))
 
     after = sheet_rows(sheet_id)
     dirty = []

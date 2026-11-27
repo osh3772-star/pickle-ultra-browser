@@ -281,7 +281,7 @@ def load_logins_from_vault(cli):
 
 
 def plan_rows(logins):
-    """-> (rows, notes, skipped). rows = [(site, username_prefill)], notes for the header cell."""
+    """-> (rows, notes). rows = [(site, username_prefill)], notes for the header cell."""
     rows, notes, seen = [], [], set()
     for item in logins:
         site = normalize_site(str(item.get("site") or ""))
@@ -291,10 +291,13 @@ def plan_rows(logins):
         has_pw = item.get("password") is True
         username = str(item.get("username") or "").strip()
         method = str(item.get("method") or "").strip()
-        prefill = username if (has_pw and username) else ""
+        # The username is pre-filled whenever the vault knows one, so the user
+        # types only the password. A social sign-in stays empty and is noted.
         if method and not has_pw:
             prefill = ""
             notes.append("%s=%s" % (site, method))
+        else:
+            prefill = username
         rows.append((site, prefill))
     rows.sort(key=lambda r: r[0])
     notes.sort()

@@ -9,10 +9,11 @@ Two sources, same rules:
          phone and sends it back; no Google account needed)
 
 Values are never printed, never logged, and never written to a temp file.
-Once a row is stored, its username/password cells are cleared (sheet) or the
-row is rewritten with the site only (file) and read back to confirm. When the
-file source was used and every row succeeded, the form file and its copies
-under attachments/ are shredded and deleted.
+Once a row is handled, its username/password cells are cleared (sheet) or the
+row is rewritten with the site only (file) and read back to confirm — a row
+that failed to store is cleared the same way, so no value is left waiting on
+disk. The form file and its copies under attachments/ are then shredded and
+deleted, and a failed row is reported so it can be filled in again.
 
 Source choice: --source auto (default) uses the sheet when the config holds a
 sheet id and the sheet is readable, and otherwise the local form. A sheet that
@@ -22,8 +23,8 @@ Output (one line per row):
   ok site=<name> row=<n> cleared=yes|no
   skip empty
   note fallback=file reason=<read|config|gog>
-  shredded file=<path> attachments=<n>
-  fail code=<site|chars|store|clear|read|range|config> row=<n>
+  shredded file=<path> removed=<yes|no> attachments=<n> home=<n>
+  fail code=<incomplete|site|chars|store|clear|read|range|config> row=<n> cleared=<yes|no>
 
 Exit codes: 0 all rows handled · 1 any row failed
 """
@@ -217,27 +218,28 @@ def handle_sheet(sheet_id, rng, gog_bin, tab):
     for idx, (site_raw, user_raw, pw_raw) in enumerate(rows):
         row_no = idx + 2
         user, password = user_raw.strip(), pw_raw.strip()
-        if not user and not password:
+        if not password:
+            # The username is pre-filled by the form itself, so an empty
+            # password cell means "not filled in yet", not an error.
             continue
         acted += 1
-        if not site_raw.strip() or not user or not password:
-            print("fail code=incomplete row={}".format(row_no))
-            rc = 1
-            continue
         name = normalize_site(site_raw)
-        if not name:
-            print("fail code=site row={}".format(row_no))
-            rc = 1
-            continue
-        if any(ch in user or ch in password for ch in "\t\r\n"):
-            print("fail code=chars row={}".format(row_no))
-            rc = 1
-            continue
-        if not store_value(name, user, password):
-            print("fail code=store row={}".format(row_no))
-            rc = 1
-            continue
+        failure = None
+        if not site_raw.strip() or not user:
+            failure = "incomplete"
+        elif not name:
+            failure = "site"
+        elif any(ch in user or ch in password for ch in "\t\r\n"):
+            failure = "chars"
+        elif not store_value(name, user, password):
+            failure = "store"
+        # A value that could not be stored must not stay in the sheet either:
+        # clear the cells first, then report.
         cleared = "yes" if clear_sheet_row(sheet_id, row_no, gog_bin, tab) else "no"
+        if failure:
+            print("fail code={} row={} cleared={}".format(failure, row_no, cleared))
+            rc = 1
+            continue
         print("ok site={} row={} cleared={}".format(name, row_no, cleared))
         if cleared != "yes":
             rc = 1
@@ -256,26 +258,21 @@ def handle_file(path, attachments_dir):
     for idx, (site_raw, user_raw, pw_raw) in enumerate(rows):
         row_no = idx + 2
         user, password = user_raw.strip(), pw_raw.strip()
-        if not user and not password:
-            continue
+        if not password:
+            continue  # not filled in yet (column B is pre-filled by design)
         acted += 1
-        if not site_raw.strip() or not user or not password:
-            print("fail code=incomplete row={}".format(row_no))
-            rc = 1
-            continue
         name = normalize_site(site_raw)
-        if not name:
-            print("fail code=site row={}".format(row_no))
-            rc = 1
-            continue
-        if any(ch in user or ch in password for ch in "\t\r\n"):
-            print("fail code=chars row={}".format(row_no))
-            rc = 1
-            continue
-        if not store_value(name, user, password):
-            print("fail code=store row={}".format(row_no))
-            rc = 1
-            continue
+        failure = None
+        if not site_raw.strip() or not user:
+            failure = "incomplete"
+        elif not name:
+            failure = "site"
+        elif any(ch in user or ch in password for ch in "\t\r\n"):
+            failure = "chars"
+        elif not store_value(name, user, password):
+            failure = "store"
+        # Clear the row in the file whatever happened: a value that could not
+        # be stored must not stay on disk waiting for a retry.
         rows[idx] = [site_raw, "", ""]
         try:
             write_form(path, rows, kind)
@@ -284,41 +281,45 @@ def handle_file(path, attachments_dir):
             rc = 1
             continue
         back, _kind = read_form(path)
-        cleared = "yes"
         probe = back[idx] if idx < len(back) else ["", "", ""]
+        cleared = "yes"
         if probe[1].strip() or probe[2].strip() or probe[0].strip() != site_raw.strip():
             cleared = "no"
+        if failure:
+            print("fail code={} row={} cleared={}".format(failure, row_no, cleared))
             rc = 1
+            continue
         print("ok site={} row={} cleared={}".format(name, row_no, cleared))
+        if cleared != "yes":
+            rc = 1
 
     if acted == 0:
         print("skip empty")
         return 0, False
 
-    if rc == 0:
-        copies = attachment_copies(path, attachments_dir)
-        base = os.path.basename(path)
-        homes = []
-        for fmt in ("tsv", "csv", "xlsx"):
-            cand = pu_config.inbox_path(fmt)
-            if (os.path.basename(cand) == base and os.path.exists(cand)
-                    and os.path.abspath(cand) != os.path.abspath(path)):
-                homes.append(cand)
-        removed = shred_delete(path)
-        n = 0
-        for c in copies:
-            if os.path.abspath(c) == os.path.abspath(path):
-                continue
-            if shred_delete(c):
-                n += 1
-        h = 0
-        for c in homes:
-            if shred_delete(c):
-                h += 1
-        print("shredded file={} removed={} attachments={} home={}"
-              .format(path, "yes" if removed else "no", n, h))
-    else:
-        print("keep file={} reason=pending".format(path))
+    copies = attachment_copies(path, attachments_dir)
+    base = os.path.basename(path)
+    homes = []
+    for fmt in ("tsv", "csv", "xlsx"):
+        cand = pu_config.inbox_path(fmt)
+        if (os.path.basename(cand) == base and os.path.exists(cand)
+                and os.path.abspath(cand) != os.path.abspath(path)):
+            homes.append(cand)
+    removed = shred_delete(path)
+    n = 0
+    for c in copies:
+        if os.path.abspath(c) == os.path.abspath(path):
+            continue
+        if shred_delete(c):
+            n += 1
+    h = 0
+    for c in homes:
+        if shred_delete(c):
+            h += 1
+    print("shredded file={} removed={} attachments={} home={}"
+          .format(path, "yes" if removed else "no", n, h))
+    if rc:
+        print("refill rows that failed, then send the file again")
     return rc, rc == 0
 
 

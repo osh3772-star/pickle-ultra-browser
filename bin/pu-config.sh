@@ -20,8 +20,8 @@ if [ -f "$PU_HOME/config.env" ]; then
 fi
 
 export PATH="$PU_TOOLS/node/bin:$PU_TOOLS/bin:$PATH"
-command -v node >/dev/null 2>&1 || \
-  echo "pu-config: node not found — run pickle-bootstrap.sh first ($PU_TOOLS/node/bin)" >&2
+# No node warning here: the vault-intake plugin sources this file and does not
+# need node. run.sh warns for itself (see "node missing" there).
 
 # awk is used for elapsed_s. Some slim images ship mawk without the awk name;
 # link it into $PU_TOOLS/bin once instead of failing every timing call.
