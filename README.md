@@ -76,6 +76,14 @@ bin/selftest.sh
 bin/run.sh batch-urls urls.txt
 ```
 
+### Prebuilt bundles (`dist/`)
+
+`node bin/build-dist.mjs` (esbuild taken from `PU_ESBUILD_DIR`, never installed inside this tree) writes
+`dist/vault-intake.mjs` — one file, `node dist/vault-intake.mjs sheet|form|intake|selftest …` — plus the
+per-tool bundles (`vault-sheet`, `vault-form`, `intake-all`) and the `cdp-daemon`/`cdp-client` pair.
+The intake bundles still use this tree's `agent-vault/vault.py`, `gog` and `.sh` wrappers; the daemon finds
+`bin/chrome-wrapper.sh` one level up (or `$CHROME_PATH`) and keeps its profile under the state dir.
+
 ### Verdict codes
 
 | code | meaning | `next=` |
