@@ -840,17 +840,18 @@ var PUPage = class {
   // *property* (el.type), so no attribute spelling can hide the field. The
   // text being typed is never echoed in the error.
   async assertNotPasswordField() {
-    let pw = false;
+    let pw = true;
     try {
-      pw = await this.evaluate(() => {
+      const res = await this.evaluate(() => {
         const el = document.activeElement;
         if (!el) return false;
         const t = String(el.type || "").toLowerCase();
         const ac = String(el.getAttribute && el.getAttribute("autocomplete") || "").toLowerCase();
         return t === "password" || ac === "current-password" || ac === "new-password";
       });
+      pw = res !== false;
     } catch {
-      pw = false;
+      pw = true;
     }
     if (pw) {
       throw new Error("password_field_refused: this build never fills a password field \u2014 hand the flow to the host agent's browser + vault (code F-AUTH, next=builtin-browser-vault)");

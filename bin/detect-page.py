@@ -588,6 +588,12 @@ def main(argv=None):
     except OSError as e:
         print("detect-page: %s" % e, file=sys.stderr)
         return 2
+    except Exception as e:
+        # Malformed facts JSON or an unreadable structure: the engine did not
+        # produce a verdict. Exit non-zero (callers map this to F-DETECT) and
+        # keep the message to the exception type — its text may quote page data.
+        print("detect-page: invalid input (%s)" % type(e).__name__, file=sys.stderr)
+        return 3
 
     verdict = decide(facts)
     if a.format == "text":

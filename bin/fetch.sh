@@ -21,9 +21,21 @@ elapsed() { awk -v s="$START" -v e="$(date +%s.%N)" 'BEGIN{printf "%.1f", e-s}';
 result() { # status code chars http next
   echo "%%CHAIN%% lane=L0 mode=read status=$1 code=$2 elapsed_s=$(elapsed) chars=$3 http=$4 next=$5";
 }
+# PUB-203: engine failure is F-DETECT, never "-" (a normal page).
+ENGINE="${PU_DETECT_ENGINE:-$HERE/detect-page.py}"
 code_of() { python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("code") or "-")
-except Exception: print("-")'; }
+raw = sys.stdin.read().strip()
+if not raw:
+    print("F-DETECT"); sys.exit(0)
+try:
+    code = json.loads(raw).get("code")
+except Exception:
+    print("F-DETECT"); sys.exit(0)
+code = "" if code is None else str(code).strip()
+if code not in {"-", "F-AUTH", "F-BOT", "F-IP", "F-EMPTY", "F-RATE",
+                "F-SERVER", "F-NOTFOUND", "F-NET", "F-TIMEOUT", "F-DETECT"}:
+    print("F-DETECT"); sys.exit(0)
+print(code)'; }
 
 HTML=$(mktemp "$TMPDIR/l0-XXXXXX.html")
 TXT=$(mktemp "$TMPDIR/l0-XXXXXX.txt")
@@ -44,7 +56,7 @@ CHARS=$(wc -m < "$TXT")
 # One engine for status/title/markers/shape/password fields.
 # F-EMPTY from the engine means "no body text"; the MINCHARS gate below owns
 # that verdict, so an empty answer falls through to it.
-CODE=$(python3 "$HERE/detect-page.py" --mode l0 --html "$HTML" --http "${HTTP:-0}" --text-chars "$CHARS" | code_of)
+CODE=$( { python3 "$ENGINE" --mode l0 --html "$HTML" --http "${HTTP:-0}" --text-chars "$CHARS" || true; } | code_of )
 [ "$CODE" = "F-EMPTY" ] && CODE=-
 # A non-success status that the engine did not call a block is a transport-level
 # failure (500, 404, 0). The old script mapped this with a case statement and
@@ -59,7 +71,7 @@ if [ "$CODE" != "-" ]; then
   case "$CODE" in
     F-AUTH)                 result fail "$CODE" "$CHARS" "$HTTP" builtin-browser-vault ;;
     F-IP|F-BOT|F-EMPTY)     result fail "$CODE" "$CHARS" "$HTTP" builtin-browser ;;
-    *)                      result fail "$CODE" "$CHARS" "$HTTP" none ;;   # F-NET / F-TIMEOUT
+    *)                      result fail "$CODE" "$CHARS" "$HTTP" none ;;   # F-DETECT / F-NET / F-TIMEOUT
   esac
   exit 1
 fi

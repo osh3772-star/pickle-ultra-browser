@@ -36,6 +36,30 @@ Related: [README](README.md) · [INSTALL](INSTALL.md) · [NOTICE-TO-USER](NOTICE
   the honest answer for a datacenter egress IP.
 - It does not touch the user's own browser profile. Its profile is `<tree>/.state/profile`.
 
+## The one explicit exception: `bin/vault-login.mjs`
+
+`run.sh` never fills a password field, and a `-f` script cannot either (the guard sits
+in the daemon, before the text reaches the page). `bin/vault-login.mjs` is the separate,
+explicitly invoked path for a login the user asked for, and the boundary is drawn there:
+
+- It is the **only** component that reads `agent-vault` and types a password, and it does so
+  only in that one run. Nothing in `run.sh`, in page content, or in the daemon's own command
+  surface can reach the vault; the page script receives the value only as keystrokes.
+- Credentials are typed only into the host named by the vault entry: `https:` only, plain
+  `http:` for `127.0.0.1`/`localhost` only, host equal to the entry or a subdomain of it.
+  A different URL is refused with `status=origin_mismatch` **before** the vault is opened,
+  again after every submit, and again before a `chp=` re-entry — a redirect cannot carry the
+  form to another host and keep the values.
+- Values are never printed: stdout/stderr and the state file carry status, URLs and page
+  state only. URLs in output and state lose their query and fragment (they may hold tokens),
+  the state file and screenshots are written `0600`, and a symlink at any of those paths is
+  refused (`status=unsafe_path`).
+- A login is reported as success only with a positive signal — still on the entry's host, no
+  password field, no challenge, no error code. A blank or browser-error page is a failure.
+- The daemon socket is still full local trust: anything that can connect can run JS in this
+  profile. `vault-login` narrows *who may read the vault and type it where*, not what a
+  local process on this account can do.
+
 ## The intake sheet and the form file
 
 Both carry one deliberate exposure: a password exists outside the vault until the agent
@@ -92,3 +116,6 @@ The latest commit on the default branch. This is a small harness; fixes land the
 - 사용자에게는 **채팅으로 비밀번호를 받지 않습니다.** 시트(또는 보내 드린 파일)가 유일한 통로이고,
   옮긴 뒤 셀을 지우거나 파일을 파쇄하는 것까지가 한 동작입니다.
 - 시트 공유 설정은 비공개 기본값 그대로 둡니다. 링크 공유로 바꾸지 않습니다.
+- `bin/vault-login.mjs`는 사용자가 명시적으로 부를 때만 금고를 읽고 로그인 폼에 입력합니다.
+  일반 `run.sh` 경로와 페이지 스크립트는 여전히 비밀번호 필드를 채울 수 없고, 금고에도 닿지 못합니다.
+  대상 호스트가 금고 항목과 다르면 `origin_mismatch`로 멈추고, 값은 출력·상태 파일에 남기지 않습니다.

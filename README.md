@@ -113,6 +113,7 @@ The intake bundles still use this tree's `agent-vault/vault.py`, `gog` and `.sh`
 | `F-AUTH` | login wall / password field / checkout entry point | `builtin-browser-vault`, or `ultra-vault` (exit 5) when the vault holds a credential for the host |
 | `F-TIMEOUT`, `F-NET` | the page never answered | `none` (retry or hand over) |
 | `F-SELECTOR` | the ref or CSS selector matched nothing | `none` |
+| `F-DETECT` | the verdict engine failed (crash, empty or invalid JSON, unknown code) | `none` (report it; the page was not judged) |
 
 ## Credential vault
 

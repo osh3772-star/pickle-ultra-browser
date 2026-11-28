@@ -234,9 +234,24 @@ const __pu_facts = () => {
 };
 JSEOF
 )
+# PUB-203: "-" means "the engine looked and found nothing". It must not also
+# mean "the engine did not run". An empty answer, unparsable JSON, a missing
+# `code` field or a code outside the documented set is F-DETECT (engine
+# failure), so a broken detector can never be reported as a normal page.
+ENGINE="${PU_DETECT_ENGINE:-$HERE/detect-page.py}"
 code_of() { python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("code") or "-")
-except Exception: print("-")'; }
+raw = sys.stdin.read().strip()
+if not raw:
+    print("F-DETECT"); sys.exit(0)
+try:
+    code = json.loads(raw).get("code")
+except Exception:
+    print("F-DETECT"); sys.exit(0)
+code = "" if code is None else str(code).strip()
+if code not in {"-", "F-AUTH", "F-BOT", "F-IP", "F-EMPTY", "F-RATE",
+                "F-SERVER", "F-NOTFOUND", "F-NET", "F-TIMEOUT", "F-DETECT"}:
+    print("F-DETECT"); sys.exit(0)
+print(code)'; }
 SETTLE_MS=${PU_SETTLE_MS:-4000}
 [ "${PU_SETTLE:-}" = "0" ] && SETTLE_MS=0
 
@@ -335,9 +350,9 @@ except Exception: print("")' "$PROBE")
   # L1 판정은 DOM 사실(동적 입력란·실제 표시 여부 포함)로 한다. 사실 수집이
   # 실패했을 때만 스냅샷 텍스트 판정으로 물러난다.
   if [ -s "$PROBE" ]; then
-    CODE=$(python3 "$HERE/detect-page.py" --mode l1 --dom "$PROBE" | code_of)
+    CODE=$( { python3 "$ENGINE" --mode l1 --dom "$PROBE" || true; } | code_of )
   else
-    CODE=$(python3 "$HERE/detect-page.py" --mode text --text-file "$OUT" | code_of)
+    CODE=$( { python3 "$ENGINE" --mode text --text-file "$OUT" || true; } | code_of )
   fi
   [ "$CODE" = "F-EMPTY" ] && CODE=-
   if [ "$CODE" != "-" ]; then
@@ -516,9 +531,11 @@ EOF
     MISSING=$(jget "$META" missing)
     REFUSED=$(jget "$META" refused)
     if [ -s "$PROBE" ]; then
-      CODE=$(python3 "$HERE/detect-page.py" --mode l1 --dom "$PROBE" | code_of)
+      CODE=$( { python3 "$ENGINE" --mode l1 --dom "$PROBE" || true; } | code_of )
     else
-      CODE="-"
+      # No DOM facts were collected: nothing was judged, so this is an engine
+      # failure, not a clean "-".
+      CODE=F-DETECT
     fi
     [ "$CODE" = "F-EMPTY" ] && CODE=-
     if [ -n "$REFUSED" ]; then

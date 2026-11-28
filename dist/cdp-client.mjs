@@ -3,7 +3,7 @@
 // bin/cdp-client.mjs
 import { connect } from "node:net";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, openSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 var STATE_DIR = process.env.PICKLE_ULTRA_STATE_DIR || join(homedir(), ".local", "share", "pickle-ultra-browser");
@@ -18,6 +18,7 @@ function tryConnect() {
     s.once("error", rej);
   });
 }
+var START_LOCK = join(STATE_DIR, "daemon.start.lock");
 async function ensureDaemon() {
   try {
     const s = await tryConnect();
@@ -25,24 +26,64 @@ async function ensureDaemon() {
     return;
   } catch {
   }
-  mkdirSync(STATE_DIR, { recursive: true });
-  const logFd = openSync(join(STATE_DIR, "cdp-daemon.log"), "a");
-  const child = spawn(process.execPath, [DAEMON], {
-    detached: true,
-    stdio: ["ignore", logFd, logFd],
-    env: process.env
-  });
-  child.unref();
-  for (let i = 0; i < 60; i++) {
-    await sleep(250);
+  mkdirSync(STATE_DIR, { recursive: true, mode: 448 });
+  const deadline = Date.now() + 2e4;
+  let haveLock = false;
+  while (Date.now() < deadline) {
+    try {
+      mkdirSync(START_LOCK, { mode: 448 });
+      haveLock = true;
+      break;
+    } catch (e) {
+      if (e && e.code !== "EEXIST") throw e;
+      try {
+        const st = statSync(START_LOCK);
+        if (Date.now() - st.mtimeMs > 15e3) {
+          rmSync(START_LOCK, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+      }
+      await sleep(250);
+      try {
+        const s = await tryConnect();
+        s.destroy();
+        return;
+      } catch {
+      }
+    }
+  }
+  if (!haveLock) throw new Error("cdp-client: daemon start lock still held after 20s \u2014 another client is starting it");
+  try {
     try {
       const s = await tryConnect();
       s.destroy();
       return;
     } catch {
     }
+    const logFd = openSync(join(STATE_DIR, "cdp-daemon.log"), "a");
+    const child = spawn(process.execPath, [DAEMON], {
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+      env: process.env
+    });
+    child.unref();
+    for (let i = 0; i < 60; i++) {
+      await sleep(250);
+      try {
+        const s = await tryConnect();
+        s.destroy();
+        return;
+      } catch {
+      }
+    }
+    throw new Error("cdp-client: cannot connect to daemon.sock (ECONNREFUSED) \u2014 daemon did not start; see cdp-daemon.log");
+  } finally {
+    try {
+      rmSync(START_LOCK, { recursive: true, force: true });
+    } catch {
+    }
   }
-  throw new Error("cdp-client: cannot connect to daemon.sock (ECONNREFUSED) \u2014 daemon did not start; see cdp-daemon.log");
 }
 async function sendAndStream(msg) {
   const sock = await tryConnect().catch(() => null);

@@ -8,7 +8,7 @@
 // the strings run.sh's retry greps for ("daemon.sock" / "ECONNREFUSED").
 import { connect } from 'node:net';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, openSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -26,6 +26,13 @@ function tryConnect() {
   });
 }
 
+// PUB-205: one starter per state directory. Two clients that both found no
+// socket used to spawn two daemons on the same socket path and profile; one
+// lost the bind and callers attached to whichever won, sometimes a daemon on
+// its way out. mkdirSync is atomic, so the directory is the lock: the winner
+// starts the daemon, everyone else waits for the socket, a lock older than 15s
+// is stale, and the lock is always removed in finally.
+const START_LOCK = join(STATE_DIR, 'daemon.start.lock');
 async function ensureDaemon() {
   try { const s = await tryConnect(); s.destroy(); return; } catch {}
   // Spawn the daemon detached with THIS process's environment (the old
@@ -33,17 +40,36 @@ async function ensureDaemon() {
   // STATE_DIR must exist before opening the log file — on a fresh install
   // it does not, and openSync throws ENOENT before the daemon (which would
   // create the dir itself) ever starts. Bug found 2026-11-26.
-  mkdirSync(STATE_DIR, { recursive: true });
-  const logFd = openSync(join(STATE_DIR, 'cdp-daemon.log'), 'a');
-  const child = spawn(process.execPath, [DAEMON], {
-    detached: true, stdio: ['ignore', logFd, logFd], env: process.env,
-  });
-  child.unref();
-  for (let i = 0; i < 60; i++) {
-    await sleep(250);
-    try { const s = await tryConnect(); s.destroy(); return; } catch {}
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 20000;
+  let haveLock = false;
+  while (Date.now() < deadline) {
+    try { mkdirSync(START_LOCK, { mode: 0o700 }); haveLock = true; break; } catch (e) {
+      if (e && e.code !== 'EEXIST') throw e;
+      try {
+        const st = statSync(START_LOCK);
+        if (Date.now() - st.mtimeMs > 15000) { rmSync(START_LOCK, { recursive: true, force: true }); continue; }
+      } catch {}
+      await sleep(250);
+      try { const s = await tryConnect(); s.destroy(); return; } catch {}
+    }
   }
-  throw new Error('cdp-client: cannot connect to daemon.sock (ECONNREFUSED) — daemon did not start; see cdp-daemon.log');
+  if (!haveLock) throw new Error('cdp-client: daemon start lock still held after 20s — another client is starting it');
+  try {
+    try { const s = await tryConnect(); s.destroy(); return; } catch {}
+    const logFd = openSync(join(STATE_DIR, 'cdp-daemon.log'), 'a');
+    const child = spawn(process.execPath, [DAEMON], {
+      detached: true, stdio: ['ignore', logFd, logFd], env: process.env,
+    });
+    child.unref();
+    for (let i = 0; i < 60; i++) {
+      await sleep(250);
+      try { const s = await tryConnect(); s.destroy(); return; } catch {}
+    }
+    throw new Error('cdp-client: cannot connect to daemon.sock (ECONNREFUSED) — daemon did not start; see cdp-daemon.log');
+  } finally {
+    try { rmSync(START_LOCK, { recursive: true, force: true }); } catch {}
+  }
 }
 
 async function sendAndStream(msg) {

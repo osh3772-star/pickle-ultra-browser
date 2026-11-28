@@ -5,7 +5,7 @@
 #   bash tests/run-tests.sh detect chain    # named suites only
 #
 # Suites: detect routecache chain bootstrap guard leak features selftest
-#         doctor intake
+#         doctor intake detectfail vaultlogin
 # Each suite prints its own PASS/FAIL lines; this runner adds one summary line
 # per suite and a total. Exit 0 only when no suite failed.
 set -uo pipefail
@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TREE="$(dirname "$HERE")"
 . "$TREE/bin/pu-config.sh"
 
-ALL="detect routecache chain bootstrap guard leak features selftest doctor intake-file intake"
+ALL="detect routecache chain bootstrap guard leak features selftest doctor intake-file intake detectfail vaultlogin"
 if [ $# -eq 0 ] || [ "$1" = "all" ]; then set -- $ALL; fi
 
 run_suite() { # name -> prints "SUITE name PASS=n FAIL=n SKIP=n rc="
@@ -22,7 +22,7 @@ run_suite() { # name -> prints "SUITE name PASS=n FAIL=n SKIP=n rc="
   # the thread budget of a small container starts clean (a leftover daemon plus
   # a fresh one can exhaust ulimit -u and look like a product failure).
   case "$name" in
-    guard|leak|features|selftest) bash "$TREE/bin/run.sh" stop >/dev/null 2>&1; sleep 1 ;;
+    guard|leak|features|selftest|detectfail|vaultlogin) bash "$TREE/bin/run.sh" stop >/dev/null 2>&1; sleep 1 ;;
   esac
   case "$name" in
     detect)    out=$(python3 "$HERE/test-detect.py" 2>&1); rc=$? ;;
@@ -36,6 +36,8 @@ run_suite() { # name -> prints "SUITE name PASS=n FAIL=n SKIP=n rc="
     doctor)    out=$(bash "$TREE/bin/doctor.sh" 2>&1); rc=$? ;;
     intake)    out=$(bash "$TREE/extensions/vault-intake/selftest-intake.sh" 2>&1); rc=$? ;;
     intake-file) out=$(bash "$HERE/test-intake-file.sh" 2>&1); rc=$? ;;
+    detectfail) out=$(bash "$HERE/test-detect-failure.sh" 2>&1); rc=$? ;;
+    vaultlogin) out=$(bash "$HERE/test-vault-login.sh" 2>&1); rc=$? ;;
     *) echo "unknown suite: $name" >&2; return 2 ;;
   esac
   # unittest prints "Ran 26 tests ... OK"; the bash suites print "name: PASS=n FAIL=n [SKIP=n]"
