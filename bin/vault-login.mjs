@@ -178,6 +178,19 @@ const { execFileSync } = await import('node:child_process');
 const fs = await import('node:fs');
 const CFG = ${JSON.stringify({ url, site, vaultPy: VAULT_PY, idSel, pwSel, submitSel, captchaSel, absShot, shotPath, spaceName, absWaitAnswer, absStateFile, waitTimeout })};
 ${DETECT_FN}
+const handleInsecureForm = async (p) => {
+  for (let i = 0; i < 2; i++) {
+    const clicked = await p.evaluate(() => {
+      if (document.title !== 'Form is not secure' && !/The information you.re about to submit is not secure/i.test(document.body?.innerText || '')) return false;
+      const btn = document.querySelector('#proceed-button') ||
+        [...document.querySelectorAll('button, a')].find(el => /send anyway/i.test(el.innerText || el.textContent || ''));
+      if (btn) { btn.click(); return true; }
+      return false;
+    }).catch(() => false);
+    if (!clicked) break;
+    await new Promise(r => setTimeout(r, 3500));
+  }
+};
 const writeState = (obj) => {
   if (!CFG.absStateFile) return;
   fs.writeFileSync(CFG.absStateFile, JSON.stringify({ ...obj, updatedAt: Date.now() }));
@@ -250,50 +263,75 @@ try {
     return;
   }
 
-  const fillResult = await p.evaluate((c, u, pw) => {
-    const vis = (el) => {
-      if (!el) return false;
-      const st = getComputedStyle(el);
-      if (st.display === 'none' || st.visibility === 'hidden') return false;
-      const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
-    };
-    const pick = (list) => list.find(vis) || null;
-    let pwEl = c.pwSel ? document.querySelector(c.pwSel) : pick([...document.querySelectorAll('input[type="password"]')]);
-    let idEl = c.idSel ? document.querySelector(c.idSel) : pick([
-      ...document.querySelectorAll('input[type="text"], input[type="email"], input:not([type])')
-    ].filter(el => el !== pwEl && !/search|query/i.test((el.name || '') + ' ' + (el.id || ''))));
-    let subEl = c.submitSel ? document.querySelector(c.submitSel) : pick([
-      ...document.querySelectorAll('button[type="submit"], input[type="submit"], #loginBtn_row, button.btn_login, button[class*="login"], a[class*="login"]')
-    ]);
-    if (!idEl || !pwEl) return { ok: false, beforeUrl: location.href };
-
-    const setVal = (el, val) => {
-      el.focus();
-      const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
-      if (desc && desc.set) desc.set.call(el, val);
-      else el.value = val;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-    setVal(idEl, u);
-    setVal(pwEl, pw);
-    const beforeUrl = location.href;
-    if (subEl) subEl.click();
-    else if (pwEl.form) {
-      if (typeof pwEl.form.requestSubmit === 'function') pwEl.form.requestSubmit();
-      else pwEl.form.submit();
+  const fillAndSubmit = async () => {
+    const focusId = await p.evaluate((c) => {
+      const vis = (el) => {
+        if (!el) return false;
+        const st = getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const pick = (list) => list.find(vis) || null;
+      const pwEl = c.pwSel ? document.querySelector(c.pwSel) : pick([...document.querySelectorAll('input[type="password"]')]);
+      const idEl = c.idSel ? document.querySelector(c.idSel) : pick([
+        ...document.querySelectorAll('input[type="text"], input[type="email"], input:not([type])')
+      ].filter(el => el !== pwEl && !/search|query/i.test((el.name || '') + ' ' + (el.id || ''))));
+      if (!pwEl) return { ok: false, beforeUrl: location.href };
+      if (idEl) { idEl.value = ''; idEl.focus(); }
+      return { ok: true, hasId: !!idEl, beforeUrl: location.href };
+    }, CFG);
+    if (!focusId || !focusId.ok) return { ok: false, focusId };
+    if (focusId.hasId) {
+      await p.cdp('Input.insertText', { text: username });
+      await new Promise(r => setTimeout(r, 150));
     }
-    return { ok: true, beforeUrl, clickedSubmit: !!subEl };
-  }, CFG, username, password);
-  password = '';
+    await p.evaluate((c) => {
+      const vis = (el) => {
+        if (!el) return false;
+        const st = getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const pwEl = c.pwSel ? document.querySelector(c.pwSel) : [...document.querySelectorAll('input[type="password"]')].find(vis);
+      if (pwEl) { pwEl.value = ''; pwEl.focus(); }
+    }, CFG);
+    await p.cdp('Input.insertText', { text: password });
+    await new Promise(r => setTimeout(r, 250));
+    const res = await p.evaluate((c) => {
+      const vis = (el) => {
+        if (!el) return false;
+        const st = getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const pick = (list) => list.find(vis) || null;
+      const pwEl = c.pwSel ? document.querySelector(c.pwSel) : pick([...document.querySelectorAll('input[type="password"]')]);
+      const subEl = c.submitSel ? document.querySelector(c.submitSel) : (
+        document.getElementById('log.login') ||
+        pick([...document.querySelectorAll('button[type="submit"], input[type="submit"], #loginBtn_row, button.btn_login, button[class*="login"], a[class*="login"]')])
+      );
+      if (subEl) subEl.click();
+      else if (pwEl && pwEl.form) {
+        if (typeof pwEl.form.requestSubmit === 'function') pwEl.form.requestSubmit();
+        else pwEl.form.submit();
+      }
+      return { ok: true, beforeUrl: location.href, clickedSubmit: !!subEl };
+    }, CFG);
+    if (!res.clickedSubmit) await p.press('Enter').catch(() => {});
+    await new Promise(r => setTimeout(r, 4500));
+    await handleInsecureForm(p);
+    return res;
+  };
 
+  const fillResult = await fillAndSubmit();
   if (!fillResult || !fillResult.ok) {
+    password = '';
     console.log(JSON.stringify({ ok: false, status: 'login_fields_not_found', fillResult }));
     return;
   }
-  if (!fillResult.clickedSubmit) await p.press('Enter').catch(() => {});
-  await new Promise(r => setTimeout(r, 4500));
 
   let after = await p.evaluate(detectState);
   if (after.isCaptcha && CFG.absWaitAnswer) {
@@ -313,19 +351,27 @@ try {
         await new Promise(r => setTimeout(r, 500));
       }
       if (!ans) {
+        password = '';
         writeState({ ok: false, status: 'captcha_timeout', screenshot: CFG.shotPath, after });
         console.log(JSON.stringify({ ok: false, status: 'captcha_timeout', screenshot: CFG.shotPath, after }));
         return;
       }
       await submitCaptchaOnPage(p, ans);
+      await handleInsecureForm(p);
       after = await p.evaluate(detectState);
       attempt += 1;
     }
-    const ok = !after.hasPasswordField && !after.isCaptcha && !/errorcode=/.test(after.url);
+    if (after.hasPasswordField && /[?&]chp=/.test(after.url)) {
+      await fillAndSubmit();
+      after = await p.evaluate(detectState);
+    }
+    password = '';
+    const ok = !after.hasPasswordField && !after.isCaptcha && !/errorcode=/.test(after.url) && !/^chrome-error:\/\//.test(after.url);
     writeState({ ok, status: ok ? 'logged_in' : 'login_failed', after });
     console.log(JSON.stringify({ ok, status: ok ? 'logged_in' : 'login_failed', beforeUrl: fillResult.beforeUrl, after }));
     return;
   }
+  password = '';
   if (after.isCaptcha) {
     keepForCaptcha = true;
     const b64 = await p.screenshot();
@@ -334,7 +380,7 @@ try {
     console.log(JSON.stringify({ ok: false, status: 'captcha', space: CFG.spaceName, screenshot: CFG.shotPath, beforeUrl: fillResult.beforeUrl, after }));
     return;
   }
-  const ok = !after.hasPasswordField && !/errorcode=/.test(after.url);
+  const ok = !after.hasPasswordField && !/errorcode=/.test(after.url) && !/^chrome-error:\/\//.test(after.url);
   writeState({ ok, status: ok ? 'logged_in' : 'login_failed', after });
   console.log(JSON.stringify({ ok, status: ok ? 'logged_in' : 'login_failed', beforeUrl: fillResult.beforeUrl, after }));
 } finally {
