@@ -106,7 +106,8 @@ const detectState = () => {
   const textHead = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 400);
   const hasCaptchaText = /additional security verification|captcha|보안문자|자동입력방지|영수증.*(금액|위치|개수|물음)|receipt was created digitally/i.test(textHead);
   const isCaptcha = !!captchaInput || (!hasPasswordField && hasCaptchaText);
-  return { url: location.href, title: document.title, hasPasswordField, isCaptcha, textHead };
+  const isVerify = !hasPasswordField && !isCaptcha && /해외 로그인 차단|본인확인이 필요|인증번호를? 입력|verification code|overseas login/i.test(textHead);
+  return { url: location.href, title: document.title, hasPasswordField, isCaptcha, isVerify, textHead };
 };
 `;
 
@@ -206,7 +207,7 @@ const submitCaptchaOnPage = async (p, ans) => {
     };
     const el = sel
       ? document.querySelector(sel)
-      : ([...document.querySelectorAll('input#captcha, input[name*="captcha" i], input[id*="captcha" i], input[type="text"]')].find(vis) || null);
+      : ([...document.querySelectorAll('input#captcha, input[name*="captcha" i], input[id*="captcha" i], input[type="tel"], input[type="email"], input[type="number"], input[type="text"]')].find(vis) || null);
     if (!el) return false;
     el.value = '';
     el.focus();
@@ -225,7 +226,7 @@ const submitCaptchaOnPage = async (p, ans) => {
     };
     const btn = sel
       ? document.querySelector(sel)
-      : (document.getElementById('log.login') || [...document.querySelectorAll('button[type="submit"], input[type="submit"], button.btn_login, button')].find(b => vis(b) && /confirm|확인|로그인|submit|sign in/i.test((b.innerText || b.value || ''))));
+      : (document.getElementById('log.login') || [...document.querySelectorAll('button[type="submit"], input[type="submit"], button.btn_login, button, a[role="button"], a[class*="btn"]')].find(b => vis(b) && /confirm|확인|로그인|submit|sign in|인증/i.test((b.innerText || b.value || ''))));
     if (btn) { btn.click(); return true; }
     return false;
   }, CFG.submitSel);
@@ -372,8 +373,32 @@ try {
       await fillAndSubmit();
       after = await p.evaluate(detectState);
     }
+    while (after.isVerify && Date.now() < deadline) {
+      const b64 = await p.screenshot();
+      fs.writeFileSync(CFG.absShot, Buffer.from(b64, 'base64'));
+      writeState({ ok: false, status: 'verify', attempt, screenshot: CFG.shotPath, after });
+      let ans = null;
+      while (Date.now() < deadline) {
+        if (fs.existsSync(CFG.absWaitAnswer)) {
+          const txt = fs.readFileSync(CFG.absWaitAnswer, 'utf8').trim();
+          try { fs.unlinkSync(CFG.absWaitAnswer); } catch {}
+          if (txt) { ans = txt; break; }
+        }
+        await new Promise(r => setTimeout(r, 500));
+      }
+      if (!ans) {
+        password = '';
+        writeState({ ok: false, status: 'verify_timeout', screenshot: CFG.shotPath, after });
+        console.log(JSON.stringify({ ok: false, status: 'verify_timeout', screenshot: CFG.shotPath, after }));
+        return;
+      }
+      await submitCaptchaOnPage(p, ans);
+      await handleInsecureForm(p);
+      after = await p.evaluate(detectState);
+      attempt += 1;
+    }
     password = '';
-    const ok = !after.hasPasswordField && !after.isCaptcha && !/errorcode=/.test(after.url) && !/^chrome-error:\/\//.test(after.url);
+    const ok = !after.hasPasswordField && !after.isCaptcha && !after.isVerify && !/errorcode=/.test(after.url) && !/^chrome-error:\/\//.test(after.url);
     writeState({ ok, status: ok ? 'logged_in' : 'login_failed', after });
     console.log(JSON.stringify({ ok, status: ok ? 'logged_in' : 'login_failed', beforeUrl: fillResult.beforeUrl, after }));
     return;
