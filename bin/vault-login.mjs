@@ -237,6 +237,13 @@ const space = await taskSpace(CFG.spaceName);
 const p = await space.newPage('main');
 let keepForCaptcha = false;
 try {
+  try {
+    await p.cdp('Network.enable', {});
+    await p.cdp('Network.setExtraHTTPHeaders', {
+      headers: { 'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.6,en;q=0.5' },
+    });
+    await p.cdp('Emulation.setLocaleOverride', { locale: process.env.PICKLE_ULTRA_LANG || 'ko-KR' }).catch(() => {});
+  } catch {}
   await p.goto(CFG.url, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
   await new Promise(r => setTimeout(r, 2000));
 

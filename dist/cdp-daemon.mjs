@@ -238,6 +238,8 @@ async function launchChrome() {
     ...sb.usable ? [] : ["--no-sandbox", "--disable-setuid-sandbox"],
     "--mute-audio",
     "--disable-blink-features=AutomationControlled",
+    `--lang=${process.env.PICKLE_ULTRA_LANG || "ko-KR"}`,
+    "--accept-lang=ko-KR,ko;q=0.9,en;q=0.5",
     ...HEADLESS ? ["--headless=new", "--hide-scrollbars", "--window-size=1280,800"] : [],
     "about:blank"
   ];
