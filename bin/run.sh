@@ -142,16 +142,41 @@ run_client() {
   return $rc
 }
 
+# User-agent strings follow the host. A macOS or arm64 install used to announce
+# itself as Linux x86_64, which is the first thing a site fingerprints (and it
+# made a Mac look like a headless Linux box on every request).
+UA_HOST_OS="$(uname -s 2>/dev/null || echo Linux)"
+UA_HOST_ARCH="$(uname -m 2>/dev/null || echo x86_64)"
+case "$UA_HOST_OS" in
+  Darwin)
+    UA_PLATFORM="macOS"
+    UA_PLATFORM_VERSION="$(sw_vers -productVersion 2>/dev/null || echo '')"
+    UA_OS_TOKEN="Macintosh; Intel Mac OS X 10_15_7"   # what Chrome itself sends on macOS, Intel or ARM
+    ;;
+  *)
+    UA_PLATFORM="Linux"
+    UA_PLATFORM_VERSION=""
+    case "$UA_HOST_ARCH" in
+      aarch64|arm64) UA_OS_TOKEN="X11; Linux aarch64" ;;
+      *)             UA_OS_TOKEN="X11; Linux x86_64" ;;
+    esac
+    ;;
+esac
+case "$UA_HOST_ARCH" in
+  aarch64|arm64) UA_ARCH="arm" ;;
+  *)             UA_ARCH="x86" ;;
+esac
+
 UAJS=$(cat <<JSEOF
   try { await p.cdp('Emulation.setUserAgentOverride', {
-    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${PU_CHROME_MAJOR}.0.0.0 Safari/537.36',
+    userAgent: 'Mozilla/5.0 (${UA_OS_TOKEN}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${PU_CHROME_MAJOR}.0.0.0 Safari/537.36',
     acceptLanguage: 'ko-KR,ko,en-US,en',
-    platform: 'Linux',
+    platform: '${UA_PLATFORM}',
     userAgentMetadata: {
       brands: [{brand: 'Google Chrome', version: '${PU_CHROME_MAJOR}'}, {brand: 'Chromium', version: '${PU_CHROME_MAJOR}'}, {brand: 'Not A(Brand', version: '8'}],
       fullVersionList: [{brand: 'Google Chrome', version: '${PU_CHROME_FULL}'}, {brand: 'Chromium', version: '${PU_CHROME_FULL}'}, {brand: 'Not A(Brand', version: '8.0.0.0'}],
       fullVersion: '${PU_CHROME_FULL}',
-      platform: 'Linux', platformVersion: '', architecture: 'x86', model: '', mobile: false, bitness: '64', wow64: false
+      platform: '${UA_PLATFORM}', platformVersion: '${UA_PLATFORM_VERSION}', architecture: '${UA_ARCH}', model: '', mobile: false, bitness: '64', wow64: false
     }
   }); } catch (e) { /* 래퍼 플래그·프로필 기본값이 남는다 */ }
 JSEOF

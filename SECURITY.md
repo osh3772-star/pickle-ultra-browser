@@ -102,7 +102,8 @@ moves it — in a Google Sheet, or in the form file the user filled in on their 
 
 Open a private GitHub security advisory for the repository, or contact the maintainer
 directly. Please do not file a public issue for a credential-handling defect. Include the
-version (`git log -1 --format=%h`), the command, and what you observed — never a real
+version (`git log -1 --format=%h`; a tree installed from a tarball has no `.git` — give the
+release or download date instead), the command, and what you observed — never a real
 password, key, or session cookie.
 
 ## Supported versions

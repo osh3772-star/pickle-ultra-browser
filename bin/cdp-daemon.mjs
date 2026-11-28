@@ -82,7 +82,11 @@ function sandboxSupport() {
   for (const c of [process.env.PICKLE_ULTRA_CHROME, process.env.CHROME_BIN]) if (c) cands.push(c);
   try {
     const root = join(homedir(), '.cache', 'ms-playwright');
-    for (const d of readdirSync(root)) if (d.startsWith('chromium-')) cands.push(join(root, d, 'chrome-linux64', 'chrome'));
+    // Linux arm64 builds ship as chrome-linux-arm64; x64 as chrome-linux64.
+    for (const d of readdirSync(root)) {
+      if (!d.startsWith('chromium-')) continue;
+      for (const plat of ['chrome-linux64', 'chrome-linux-arm64']) cands.push(join(root, d, plat, 'chrome'));
+    }
   } catch {}
   for (const c of cands) {
     try {

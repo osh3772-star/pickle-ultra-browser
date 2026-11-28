@@ -66,6 +66,11 @@ never overwrites a column B already there, and appends only sites that are new.
   so no password waits on disk; ask the user to fill it again.
   `cleared=no` alone means a value may still be there: shred it first, then report.
 - The plugin never reads a password from the vault, and never writes one into a page.
+- **File round trip only:** while the form is on its way back, the password sits in plain
+  text inside that file and in whatever the chat app keeps of it (a sent attachment, a
+  download, a photo roll). The zeroing in the paragraph above runs on the copy the harness
+  can reach; the user should send the file back in the same conversation and delete it on
+  their phone afterwards. Where a sheet or a secret-input card exists, prefer it.
 
 ## Files
 

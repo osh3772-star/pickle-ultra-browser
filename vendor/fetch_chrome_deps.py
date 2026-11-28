@@ -3,18 +3,54 @@
 
 Uses the Debian trixie Packages and Contents indexes to map sonames to packages,
 downloads the .deb files, and extracts them under .tools/chrome-deps (override with
-PU_CHROME_DEPS). Needs dpkg-deb; Linux only.
+PU_CHROME_DEPS). The distribution architecture follows the host (x86_64/amd64 or
+aarch64/arm64) and can be forced with `--arch <name>`. Needs dpkg-deb; Linux only.
 """
-import gzip, hashlib, lzma, os, re, subprocess, sys, urllib.request
+import gzip, hashlib, lzma, os, platform, re, shutil, subprocess, sys, urllib.request
 
 BASE = "https://deb.debian.org/debian"
+TIMEOUT = 60        # seconds; an unresponsive mirror must not hang the install
 TREE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORK = os.environ.get("PU_CHROME_DEPS", os.path.join(TREE, ".tools", "chrome-deps"))
 DEBS = os.path.join(WORK, "debs")
 PKGS = os.path.join(WORK, "pkgs")
 LIB = os.path.join(WORK, "lib")
 IDX = os.path.join(WORK, "idx")
-SYSLIB = ["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu"]
+
+
+def _arch(machine):
+    """uname -m / platform.machine() -> (Debian arch, multiarch dir).
+    Only the two architectures Playwright Chromium ships for are mapped; anything
+    else is refused here rather than by fetching amd64 packages for an arm64 box."""
+    m = (machine or "").strip().lower()
+    if m in ("x86_64", "amd64", "x64"):
+        return "amd64", "x86_64-linux-gnu"
+    if m in ("aarch64", "arm64", "armv8l", "armv8b"):
+        return "arm64", "aarch64-linux-gnu"
+    return None
+
+
+def _pick_arch(argv):
+    """Optional: fetch_chrome_deps.py [--arch <name>| <name>] — defaults to this host."""
+    want = None
+    args = list(argv[1:])
+    if "--arch" in args:
+        i = args.index("--arch")
+        if i + 1 < len(args):
+            want = args[i + 1]
+    elif args and not args[0].startswith("-"):
+        want = args[0]
+    return want or platform.machine()
+
+
+_WANT_ARCH = _pick_arch(sys.argv)
+_picked = _arch(_WANT_ARCH)
+if not _picked:
+    print(f"fetch_chrome_deps: unsupported architecture '{_WANT_ARCH}' "
+          f"(this build handles x86_64/amd64 and aarch64/arm64)", file=sys.stderr)
+    sys.exit(2)
+DEB_ARCH, MULTIARCH = _picked
+SYSLIB = [f"/usr/lib/{MULTIARCH}", f"/lib/{MULTIARCH}"]
 def _find_chrome():
     import glob
     env = os.environ.get("PU_CHROME")
@@ -42,7 +78,10 @@ def dl(url, dest):
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         return dest
     print(f"  GET {url}", flush=True)
-    urllib.request.urlretrieve(url, dest + ".part")
+    # urlretrieve takes no timeout; urlopen does, so a stalled mirror ends as an
+    # error instead of a hanging install.
+    with urllib.request.urlopen(url, timeout=TIMEOUT) as r, open(dest + ".part", "wb") as out:
+        shutil.copyfileobj(r, out)
     os.replace(dest + ".part", dest)
     print(f"      -> {os.path.getsize(dest)/1e6:.1f} MB", flush=True)
     return dest
@@ -59,10 +98,14 @@ def sha256_file(path):
 def verify_deb(path, expected, name):
     """Every .deb must match the SHA256 the Debian Packages index published.
     Without this the install trusted whatever arrived over TLS, including a
-    stale file left behind by an interrupted earlier run."""
+    stale file left behind by an interrupted earlier run.
+
+    A stanza without SHA256 is not "fine": it is a package this build cannot
+    check, so it is refused instead of installed unverified."""
     if not expected:
-        print(f"   .. {os.path.basename(path)} has no SHA256 in the index (old mirror?)", flush=True)
-        return True
+        print(f"   !! {name}: no SHA256 in the Packages index — refusing it "
+              f"(unverified download)", flush=True)
+        return False
     got = sha256_file(path)
     if got != expected:
         print(f"   !! checksum mismatch for {name}: expected {expected[:16]}… got {got[:16]}… — discarding", flush=True)
@@ -76,10 +119,10 @@ def verify_deb(path, expected, name):
 
 def parse_packages():
     pkgs = {}
-    for comp in ("main", "main"):  # single pass, main only
-        pass
-    path = os.path.join(IDX, "Packages.xz")
-    dl(f"{BASE}/dists/trixie/main/binary-amd64/Packages.xz", path)
+    # Arch-specific file name: a cached amd64 index must never be reused on an
+    # arm64 host (that is how the wrong .deb arch got selected before).
+    path = os.path.join(IDX, f"Packages-{DEB_ARCH}.xz")
+    dl(f"{BASE}/dists/trixie/main/binary-{DEB_ARCH}/Packages.xz", path)
     raw = lzma.open(path, "rt", encoding="utf-8", errors="replace").read()
     for stanza in raw.split("\n\n"):
         if not stanza.strip():
@@ -99,10 +142,10 @@ def parse_packages():
 
 def parse_contents():
     """soname -> [packages] from the trixie main Contents index."""
-    path = os.path.join(IDX, "Contents-amd64.gz")
-    dl(f"{BASE}/dists/trixie/main/Contents-amd64.gz", path)
+    path = os.path.join(IDX, f"Contents-{DEB_ARCH}.gz")
+    dl(f"{BASE}/dists/trixie/main/Contents-{DEB_ARCH}.gz", path)
     m = {}
-    pat = re.compile(r"^usr/lib/x86_64-linux-gnu/([^/]+\.so[^/]*)$")
+    pat = re.compile(rf"^usr/lib/{re.escape(MULTIARCH)}/([^/]+\.so[^/]*)$")
     with gzip.open(path, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
             if ".so" not in line:
@@ -152,7 +195,7 @@ def deps_of(pkgs, name):
 
 
 def main():
-    print("== indexes ==", flush=True)
+    print(f"== indexes ({DEB_ARCH} / {MULTIARCH}) ==", flush=True)
     pkgs = parse_packages()
     contents = parse_contents()
     print(f"   packages={len(pkgs)} sonames={len(contents)}", flush=True)
@@ -242,8 +285,19 @@ def flatten():
     """Copy extracted libraries into $LIB (no-op for parts already present)."""
     n = 0
     skip = 0
+
+    def cp(src, dst, what):
+        """cp -a that reports its own failure — a silent copy left ldd still
+        missing the library with nothing in the log to say why."""
+        try:
+            subprocess.run(["cp", "-a", src, dst], check=True, capture_output=True, text=True)
+            return True
+        except (subprocess.CalledProcessError, OSError) as e:
+            print(f"   !! copy failed {what}: {src} -> {dst}: {e}", flush=True)
+            return False
+
     for root, dirs, files in os.walk(PKGS):
-        if os.path.basename(root) != "x86_64-linux-gnu":
+        if os.path.basename(root) != MULTIARCH:
             continue
         for f in files:
             if ".so" not in f:
@@ -256,13 +310,13 @@ def flatten():
                     bn = os.path.basename(target)
                     real = os.path.join(root, target)
                     if os.path.exists(real):
-                        subprocess.run(["cp", "-a", real, os.path.join(LIB, bn)])
+                        cp(real, os.path.join(LIB, bn), "target")
             if present_in_system(f):
                 skip += 1
                 continue
             if not os.path.exists(dst):
-                subprocess.run(["cp", "-a", src, dst])
-                n += 1
+                if cp(src, dst, "lib"):
+                    n += 1
     print(f"== flattened {n} libs into {LIB} (skipped {skip} already in system)", flush=True)
     return n
 

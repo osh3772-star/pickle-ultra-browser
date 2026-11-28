@@ -20,13 +20,20 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODE="${1:?usage: chain.sh read|open <url>}"
 URL="${2:?usage: chain.sh read|open <url>}"
+case "$MODE" in
+  read|open) ;;
+  *) echo "chain.sh: unknown mode '$MODE' (expected read or open)" >&2; exit 2 ;;
+esac
 START=$(date +%s.%N)
 elapsed() { awk -v s="$START" -v e="$(date +%s.%N)" 'BEGIN{printf "%.1f", e-s}'; }
 
 T0=$(mktemp "$TMPDIR/chain-l0-XXXXXX.txt")
 T1=$(mktemp "$TMPDIR/chain-l1-XXXXXX.txt")
 trap 'rm -f "$T0" "$T1"' EXIT
-field() { sed -n "s/.* $2=\([^ ]*\).*/\1/p" "$1" | tail -1; }
+# Only the verdict line carries these fields. Reading every line let a page that
+# happens to contain " status=..." (or a reflected query string) supply the
+# value, and tail -1 then preferred that line over the verdict.
+field() { sed -n "/^%%CHAIN%%/s/.* $2=\([^ ]*\).*/\1/p" "$1" | tail -1; }
 body() { grep -v '^%%CHAIN%%' "$1"; }
 cache_set() { python3 "$HERE/routecache.py" set "$DOMAIN" l1 "$1" 2>/dev/null || true; }
 

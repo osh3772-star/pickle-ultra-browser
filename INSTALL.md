@@ -22,11 +22,11 @@ a form file the user fills in on their phone and sends back when it is not (step
 ## 0. The one place to change the repository URL
 
 ```bash
-REPO_URL="https://github.com/<owner>/pickle-ultra-browser"
+REPO_URL="https://github.com/osh3772-star/pickle-ultra-browser"
 ```
 
-This is the only place the URL appears in this repository's documents. When the real
-location is fixed, replace this line and nothing else. Everything below uses `$REPO_URL`.
+This is the only place the URL appears in this repository's documents. Everything below uses
+`$REPO_URL`. A fork replaces this one line and nothing else.
 
 ## 1. Prerequisites (check, do not guess)
 
@@ -43,7 +43,9 @@ location is fixed, replace this line and nothing else. Everything below uses `$R
 
 No root and no `sudo` are required. Chromium's missing shared libraries
 (`libnss3`, `libnspr4`, …) are fetched as Debian `.deb` files and extracted into the tree
-by `vendor/fetch_chrome_deps.py`; on macOS that step is skipped.
+by `vendor/fetch_chrome_deps.py`, for the host's architecture (`amd64` or `arm64`; force
+with `--arch`). On macOS there is no `ldd` and the system frameworks are used, so that step
+reports `skipped (macOS…)` and the browser is started without it.
 
 ## 2. Clone into the user's home
 
@@ -54,6 +56,10 @@ cd "$HOME/pickle-ultra"
 
 If the tree already exists, use it as-is (`git pull` only if it is a clean checkout).
 Never install into a shared or world-writable directory.
+
+> Installed from a tarball instead of a clone? There is no `.git` there: `git pull` and
+> `git log -1` do not work. Download the new tarball over the tree instead (your
+> `config.env`, `.state/` and `agent-vault/` are left alone by the installer).
 
 ## 3. Install runtime pieces (idempotent, re-runnable)
 
@@ -72,8 +78,11 @@ It does, in order:
    the Playwright cache. Playwright publishes no checksum for the browser archive, so the
    pin plus a post-install "does it run" check is what this build can offer; set
    `PU_CHROMIUM_SHA256=<hex>` to make it strict (the run prints the hash it found).
+   The "does it run" check (`--version`) runs **after** step 3, because on a minimal image
+   the binary cannot start before its shared libraries are in place.
 3. Missing Chromium shared libraries into `.tools/chrome-deps/lib`, each `.deb` verified
-   against the **SHA256 in the Debian `Packages` index** before extraction.
+   against the **SHA256 in the Debian `Packages` index** before extraction. A `.deb` the
+   index does not carry a hash for is refused, not installed unchecked.
 4. `mawk` when the image has no `awk`.
 5. `config.env` from `config.env.example` **only when absent**, then a warm-up and a read of
    `https://example.com`.

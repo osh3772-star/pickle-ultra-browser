@@ -17,7 +17,9 @@
 #      anyone who has recorded the hash once (the run prints it).
 #   3) Chromium shared libraries, extracted from Debian .deb files into the tree
 #      (no root, no apt: dpkg-deb -x). Every .deb is verified against the
-#      SHA256 in the Debian Packages index before extraction.
+#      SHA256 in the Debian Packages index before extraction. "Does the browser
+#      run" (--version) is checked only after this step: on a minimal image the
+#      binary cannot start before the libraries are in place.
 #   4) awk (mawk) -- used for elapsed_s and absent from slim images.
 #   5) config.env from config.env.example (only when absent) + verification
 #      (warm the daemon, read example.com, stop it).
@@ -65,10 +67,25 @@ esac
 echo "platform: $OS/$ARCH -> $NODE_PLAT"
 
 # --- helpers ----------------------------------------------------------------
+# sha256_of FILE — the digest alone, without awk. Step 4 is what installs mawk,
+# so nothing before it (Node is step 1) may depend on awk existing: on a slim
+# image that made the Node checksum unverifiable and the run was stopped for a
+# missing tool rather than a bad download.
 sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
-  else die "no sha256 tool (sha256sum or shasum)" 1; fi
+  local out h rc
+  if command -v sha256sum >/dev/null 2>&1; then
+    out="$(sha256sum -- "$1" 2>/dev/null)"; rc=$?
+  elif command -v shasum >/dev/null 2>&1; then
+    out="$(shasum -a 256 -- "$1" 2>/dev/null)"; rc=$?
+  else
+    die "no sha256 tool (sha256sum or shasum)" 1
+  fi
+  h="${out%% *}"                      # first field: sha256sum/shasum both lead with the digest
+  if [ "$rc" -ne 0 ] || [ -z "$h" ]; then
+    echo "  cannot hash $1 (sha256 tool exited $rc)" >&2
+    return 1
+  fi
+  printf '%s\n' "$h"
 }
 
 # dl URL DEST — cached download; a .part file is resumed, never trusted as final.
@@ -95,6 +112,10 @@ dl() {
 
 verify_sha() { # file expected label
   local got; got="$(sha256_of "$1")"
+  if [ -z "$got" ]; then
+    echo "  checksum could not be computed for $3 — not installing it" >&2
+    return 1
+  fi
   if [ "$got" != "$2" ]; then
     rm -f "$1"
     echo "  checksum MISMATCH for $3" >&2
@@ -118,7 +139,12 @@ else
   TARBALL="$DL/node-$NODE_VER-$NODE_PLAT.tar.gz"
   SUMS="$DL/SHASUMS256-$NODE_VER.txt"
   dl "$NODE_BASE/$NODE_VER/SHASUMS256.txt" "$SUMS" || die "cannot download SHASUMS256.txt for $NODE_VER"
-  WANT="$(awk -v f="node-$NODE_VER-$NODE_PLAT.tar.gz" '$2==f{print $1}' "$SUMS" | head -1)"
+  # Parse SHASUMS256.txt with the shell's own read (two columns: digest, name) —
+  # awk is not installed yet at this point on a minimal image.
+  WANT=""
+  while read -r _h _f _rest; do
+    if [ "$_f" = "node-$NODE_VER-$NODE_PLAT.tar.gz" ]; then WANT="$_h"; break; fi
+  done < "$SUMS"
   [ -n "$WANT" ] || die "no checksum for node-$NODE_VER-$NODE_PLAT.tar.gz in SHASUMS256.txt" 3
   # A cached tarball is only reused if it still matches.
   if [ -s "$TARBALL" ] && [ "$(sha256_of "$TARBALL")" != "$WANT" ]; then
@@ -158,13 +184,7 @@ else
 fi
 if [ -n "$CHROME_BIN_FOUND" ]; then
   [ -x "$CHROME_BIN_FOUND" ] || die "chromium found but not executable: $CHROME_BIN_FOUND"
-  V="$("$CHROME_BIN_FOUND" --version 2>/dev/null | head -1)"
-  case "$V" in *Chrome*|*Chromium*) echo "chromium: $V" ;; *) die "chromium does not run: $CHROME_BIN_FOUND ($V)" ;; esac
-  CHROME_SHA="$(sha256_of "$CHROME_BIN_FOUND")"
-  echo "chromium sha256: $CHROME_SHA"
-  if [ -n "${PU_CHROMIUM_SHA256:-}" ] && [ "$PU_CHROMIUM_SHA256" != "$CHROME_SHA" ]; then
-    die "chromium binary does not match PU_CHROMIUM_SHA256 (expected $PU_CHROMIUM_SHA256)" 3
-  fi
+  echo "chromium binary: $CHROME_BIN_FOUND"
 elif [ "${PU_SKIP_BROWSER:-0}" != "1" ]; then
   die "chromium install failed (expected revision $CHROMIUM_REV for playwright $PLAYWRIGHT_VERSION)"
 fi
@@ -174,9 +194,20 @@ say "3) Chromium shared libraries (extract .deb, no root)"
 DEPS="$PU_TOOLS/chrome-deps/lib"
 if [ "${PU_SKIP_BROWSER:-0}" = "1" ] || [ -z "${CHROME_BIN_FOUND:-}" ]; then
   echo "skipped (no browser)"
+elif [ "$OS" = "Darwin" ]; then
+  echo "skipped (macOS: system frameworks are used, and there is no ldd)"
 else
   export PU_CHROME="$CHROME_BIN_FOUND"
-  if LD_LIBRARY_PATH="$DEPS" ldd "$CHROME_BIN_FOUND" 2>/dev/null | grep -q 'not found'; then
+  # The browser cannot run before these libraries exist (a minimal image has no
+  # libnspr4.so), so "does it run" is checked in step 3b, after this one. A
+  # failed ldd tells us nothing about the libraries, and must not be mistaken
+  # for "none missing".
+  LDD_RC=0
+  LDD_OUT="$(LD_LIBRARY_PATH="$DEPS" ldd "$CHROME_BIN_FOUND" 2>&1)" || LDD_RC=$?
+  if [ "$LDD_RC" -ne 0 ] && [ -z "$LDD_OUT" ]; then
+    die "ldd failed on $CHROME_BIN_FOUND (rc=$LDD_RC) — cannot tell which libraries are missing"
+  fi
+  if printf '%s\n' "$LDD_OUT" | grep -q 'not found'; then
     FCD="$PU_TOOLS/fetch_chrome_deps.py"
     [ -f "$FCD" ] || FCD="$HERE/vendor/fetch_chrome_deps.py"
     python3 "$FCD" || die "shared-library fetch failed"
@@ -185,42 +216,86 @@ else
   fi
 fi
 
+# --- 3b) chromium runs ------------------------------------------------------
+# Only after step 3 can the binary answer --version: before the libraries are
+# in place it dies on libnspr4.so and the run looked like a broken download.
+# The hash pin is checked on a binary that is known to start.
+if [ "${PU_SKIP_BROWSER:-0}" != "1" ] && [ -n "${CHROME_BIN_FOUND:-}" ]; then
+  V="$(LD_LIBRARY_PATH="$DEPS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$CHROME_BIN_FOUND" --version 2>/dev/null | head -1)"
+  case "$V" in *Chrome*|*Chromium*) echo "chromium: $V" ;; *) die "chromium does not run: $CHROME_BIN_FOUND ($V)" ;; esac
+  CHROME_SHA="$(sha256_of "$CHROME_BIN_FOUND")"
+  [ -n "$CHROME_SHA" ] || die "cannot hash the chromium binary: $CHROME_BIN_FOUND"
+  echo "chromium sha256: $CHROME_SHA"
+  if [ -n "${PU_CHROMIUM_SHA256:-}" ] && [ "$PU_CHROMIUM_SHA256" != "$CHROME_SHA" ]; then
+    die "chromium binary does not match PU_CHROMIUM_SHA256 (expected $PU_CHROMIUM_SHA256)" 3
+  fi
+fi
+
 # --- 4) awk ----------------------------------------------------------------
 say "4) awk (missing on slim images — needed for elapsed_s)"
-if command -v awk >/dev/null 2>&1; then
+awk_ok() { command -v awk >/dev/null 2>&1 && [ "$(awk 'BEGIN{print 1}' 2>/dev/null)" = "1" ]; }
+if awk_ok; then
   echo "already: $(command -v awk)"
 else
+  # .tools/bin comes first in PATH, so a dangling .tools/bin/awk left behind by
+  # an interrupted mawk install hides a perfectly good system awk.
+  if [ -L "$PU_TOOLS/bin/awk" ] && [ ! -e "$PU_TOOLS/bin/awk" ]; then
+    echo "  clearing broken link: $PU_TOOLS/bin/awk"
+    rm -f "$PU_TOOLS/bin/awk"
+    awk_ok && echo "already: $(command -v awk)"
+  fi
+fi
+if ! awk_ok; then
   python3 - <<'PY'
-import hashlib, lzma, os, subprocess, urllib.request
+import hashlib, lzma, os, platform, subprocess, urllib.request
 t = os.environ.get("PU_TOOLS") or os.path.expanduser("~/pickle-ultra/.tools")
 w = os.path.join(t, "awk"); os.makedirs(w, exist_ok=True); os.makedirs(os.path.join(t, "bin"), exist_ok=True)
-idx = os.path.join(t, "chrome-deps", "idx", "Packages.xz")
-if os.path.exists(idx):
+m = platform.machine().lower()
+deb_arch = "arm64" if m in ("aarch64", "arm64") else "amd64"
+idx = None
+for cand in (os.path.join(t, "chrome-deps", "idx", "Packages-%s.xz" % deb_arch),
+             os.path.join(t, "chrome-deps", "idx", "Packages.xz")):
+    if os.path.exists(cand):
+        idx = cand; break
+if idx:
     raw = lzma.open(idx, "rt", encoding="utf-8", errors="replace").read()
     fn = sha = None
     for st in raw.split("\n\n"):
-        if st.startswith("Package: mawk\n"):
-            for l in st.split("\n"):
-                if l.startswith("Filename: "): fn = l.split(": ", 1)[1]
-                elif l.startswith("SHA256: "): sha = l.split(": ", 1)[1].strip()
-            break
+        if not st.startswith("Package: mawk\n"):
+            continue
+        arch = ""
+        for l in st.split("\n"):
+            if l.startswith("Architecture: "): arch = l.split(": ", 1)[1].strip()
+        if arch not in (deb_arch, "all"):
+            continue
+        for l in st.split("\n"):
+            if l.startswith("Filename: "): fn = l.split(": ", 1)[1]
+            elif l.startswith("SHA256: "): sha = l.split(": ", 1)[1].strip()
+        break
     if fn:
         deb = os.path.join(w, "mawk.deb")
         if not os.path.exists(deb):
-            urllib.request.urlretrieve("https://deb.debian.org/debian/" + fn, deb + ".part")
+            # 60 s timeout: an unresponsive mirror must not hang the install.
+            with urllib.request.urlopen("https://deb.debian.org/debian/" + fn, timeout=60) as r, \
+                 open(deb + ".part", "wb") as out:
+                import shutil
+                shutil.copyfileobj(r, out)
             os.replace(deb + ".part", deb)
         if sha:
             got = hashlib.sha256(open(deb, "rb").read()).hexdigest()
             if got != sha:
                 os.unlink(deb)
                 raise SystemExit("mawk.deb checksum mismatch (expected %s, got %s)" % (sha, got))
+        else:
+            print("mawk: no SHA256 in the Packages index — installing unverified")
         subprocess.run(["dpkg-deb", "-x", deb, os.path.join(w, "root")], check=True)
-        subprocess.run(["cp", "-a", os.path.join(w, "root/usr/bin/mawk"), os.path.join(t, "bin/mawk")])
+        subprocess.run(["cp", "-a", os.path.join(w, "root/usr/bin/mawk"), os.path.join(t, "bin/mawk")], check=True)
         link = os.path.join(t, "bin/awk")
+        if os.path.lexists(link) and not os.path.exists(link): os.unlink(link)
         if not os.path.lexists(link): os.symlink(os.path.join(t, "bin/mawk"), link)
         print("installed: " + os.path.join(t, "bin/awk") + " (checksum verified)")
 PY
-  command -v awk >/dev/null 2>&1 || echo "awk install failed — only elapsed_s is blank, results are unaffected"
+  awk_ok || echo "awk install failed — only elapsed_s is blank, results are unaffected"
 fi
 
 # --- 5) config.env ----------------------------------------------------------
