@@ -63,6 +63,10 @@ let url = null, site = null;
 let idSel = null, pwSel = null, submitSel = null, captchaSel = null;
 let shotPath = null, spaceName = null, captchaAnswer = null;
 let waitAnswerFile = null, stateFile = null, waitTimeout = 240;
+// How long to keep watching the page for it to leave the login form after a
+// submit (a slow POST → 303 → dashboard used to be judged at a fixed 4.5s and
+// reported as login_failed while the dashboard was already loading).
+let settleTimeout = 12;
 
 const pos = [];
 for (let i = 0; i < args.length; i++) {
@@ -77,6 +81,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--wait-answer-file') waitAnswerFile = args[++i];
   else if (a === '--state-file') stateFile = args[++i];
   else if (a === '--wait-timeout') waitTimeout = Math.max(10, Number(args[++i]) || 240);
+  else if (a === '--settle-timeout') settleTimeout = Math.max(2, Number(args[++i]) || 12);
   else pos.push(a);
 }
 
@@ -86,6 +91,7 @@ if (!captchaAnswer) {
   if (!url || !site) {
     console.error('usage: vault-login.mjs <url> <vault-site> [--shot <path>] [--space <name>] [--id-sel <css>] [--pw-sel <css>] [--submit-sel <css>]');
     console.error('   or: vault-login.mjs --captcha-answer <text> --space <name> [--shot <path>] [--captcha-sel <css>] [--submit-sel <css>]');
+    console.error('   options: [--state-file <path>] [--wait-answer-file <path>] [--wait-timeout <s>] [--settle-timeout <s>]');
     process.exit(2);
   }
   const originIssue = checkOrigin(url, site);
@@ -187,20 +193,38 @@ await ensureDaemon();
 
 const DETECT_FN = `
 const detectState = () => {
+  // "Visible" means a human could see it: the element and every ancestor is
+  // laid out, not display:none/hidden/opacity:0, and the box is inside the
+  // viewport. A login drawer parked off-canvas (left:-9999px, translateX(-100%))
+  // keeps a real box, so without the viewport test it made a signed-in
+  // dashboard look like a login page and turned success into login_failed.
   const vis = (el) => {
     if (!el) return false;
-    const st = getComputedStyle(el);
-    if (st.display === 'none' || st.visibility === 'hidden') return false;
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+      if (n.hidden) return false;
+      const cs = getComputedStyle(n);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+      if (Number(cs.opacity) === 0) return false;
+    }
     const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    if (r.width <= 1 || r.height <= 1) return false; // clip/sr-only pattern
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    // Only horizontal off-canvas counts: a form below the fold is still a
+    // visible form after scrolling, but a drawer parked at left:-9999px
+    // (or translateX(-100%)) is not.
+    if (r.right <= 0 || r.left >= vw) return false;
+    return true;
   };
   const hasPasswordField = [...document.querySelectorAll('input[type="password"]')].some(vis);
+  // Positive evidence of a session. Used only to override a stray visible
+  // password field (an account settings form); a real login form never has one.
+  const authedSignal = [...document.querySelectorAll('a[href*="logout" i], a[href*="log-out" i], a[href*="signout" i], a[href*="sign-out" i], button[data-action*="logout" i]')].some(vis);
   const captchaInput = [...document.querySelectorAll('input#captcha, input[name*="captcha" i], input[id*="captcha" i]')].find(vis);
   const textHead = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 400);
   const hasCaptchaText = /additional security verification|captcha|보안문자|자동입력방지|영수증.*(금액|위치|개수|물음)|receipt was created digitally/i.test(textHead);
   const isCaptcha = !!captchaInput || (!hasPasswordField && hasCaptchaText);
   const isVerify = !hasPasswordField && !isCaptcha && /해외 로그인 차단|본인확인이 필요|인증번호를? 입력|verification code|overseas login/i.test(textHead);
-  return { url: location.href, title: document.title, hasPasswordField, isCaptcha, isVerify, textHead };
+  return { url: location.href, title: document.title, hasPasswordField, authedSignal, isCaptcha, isVerify, textHead };
 };
 `;
 
@@ -295,7 +319,7 @@ if (!clicked) await p.press('Enter').catch(() => {});
 await new Promise(r => setTimeout(r, 4500));
 
 const after = await p.evaluate(detectState);
-if (after.isCaptcha || after.hasPasswordField) {
+if (after.isCaptcha || (after.hasPasswordField && !after.authedSignal)) {
   const b64 = await p.screenshot();
   saveShot(b64);
   console.log(JSON.stringify({ ok: false, status: after.isCaptcha ? 'captcha' : 'login_failed', space: CFG.spaceName, screenshot: CFG.shotPath, after: pubAfter(after) }));
@@ -307,7 +331,7 @@ console.log(JSON.stringify({ ok: true, status: 'logged_in', after: pubAfter(afte
   : `
 const { execFileSync } = await import('node:child_process');
 const fs = await import('node:fs');
-const CFG = ${JSON.stringify({ url, site, vaultPy: VAULT_PY, idSel, pwSel, submitSel, captchaSel, absShot, shotPath, spaceName, absWaitAnswer, absStateFile, waitTimeout })};
+const CFG = ${JSON.stringify({ url, site, vaultPy: VAULT_PY, idSel, pwSel, submitSel, captchaSel, absShot, shotPath, spaceName, absWaitAnswer, absStateFile, waitTimeout, settleMs: settleTimeout * 1000 })};
 ${DETECT_FN}
 ${SAFE_FN}
 const saveShot = (b64) => {
@@ -379,6 +403,30 @@ const submitCaptchaOnPage = async (p, ans) => {
 };
 const space = await taskSpace(CFG.spaceName);
 const p = await space.newPage('main');
+// After a submit the page may take seconds to navigate (POST → 303 →
+// dashboard). Judging it at one fixed instant was the bug: a dashboard still
+// loading looked like the login form and the run reported login_failed. Poll
+// until the page has left the form, an error is on screen, or it stopped
+// changing.
+const loginError = (st) => /[?&](?:error|errorcode|err)=(?:[1-9]\\d*|true|yes|1)\\b/i.test(st.url || '')
+  || /아이디 또는 비밀번호|비밀번호가 (?:맞지|틀렸)|invalid (?:credentials|login)|incorrect (?:password|username)|로그인에 실패/i.test(String(st.textHead || '').slice(0, 400));
+const judgedLoggedIn = (st) => !afterProblem(st.url, CFG.site) && !st.isCaptcha && !st.isVerify
+  && !loginError(st) && (!st.hasPasswordField || st.authedSignal === true);
+const settleAfterSubmit = async (maxMs) => {
+  const deadline = Date.now() + Math.max(1000, maxMs || 12000);
+  let st = await p.evaluate(detectState);
+  let stable = 0;
+  while (Date.now() < deadline) {
+    if (judgedLoggedIn(st)) return st;
+    if (loginError(st) && st.hasPasswordField) return st;
+    await new Promise(r => setTimeout(r, 500));
+    const next = await p.evaluate(detectState);
+    stable = (next.url === st.url && next.hasPasswordField === st.hasPasswordField) ? stable + 1 : 0;
+    st = next;
+    if (stable >= 4) return st; // stopped changing and still not signed in
+  }
+  return st;
+};
 let keepForCaptcha = false;
 try {
   try {
@@ -495,7 +543,7 @@ try {
     return;
   }
 
-  let after = await p.evaluate(detectState);
+  let after = await settleAfterSubmit(CFG.settleMs);
   // A submit can land on another host (SSO hop, hostile redirect). Nothing
   // more is typed until the page is back on the entry's site.
   const postIssue = afterProblem(after.url, CFG.site);
@@ -530,7 +578,7 @@ try {
       }
       await submitCaptchaOnPage(p, ans);
       await handleInsecureForm(p);
-      after = await p.evaluate(detectState);
+      after = await settleAfterSubmit(CFG.settleMs);
       const esc1 = afterProblem(after.url, CFG.site);
       if (esc1 && esc1 !== 'chrome_error' && esc1 !== 'blank_page') {
         password = '';
@@ -545,7 +593,7 @@ try {
     // entry's own host.
     if (after.hasPasswordField && /[?&]chp=/.test(after.url) && !originProblem(after.url, CFG.site)) {
       await fillAndSubmit();
-      after = await p.evaluate(detectState);
+      after = await settleAfterSubmit(CFG.settleMs);
     }
     while (after.isVerify && Date.now() < deadline) {
       const b64 = await p.screenshot();
@@ -568,7 +616,7 @@ try {
       }
       await submitCaptchaOnPage(p, ans);
       await handleInsecureForm(p);
-      after = await p.evaluate(detectState);
+      after = await settleAfterSubmit(CFG.settleMs);
       const esc2 = afterProblem(after.url, CFG.site);
       if (esc2 && esc2 !== 'chrome_error' && esc2 !== 'blank_page') {
         password = '';
@@ -580,10 +628,10 @@ try {
       attempt += 1;
     }
     password = '';
-    // Success needs a positive signal: still on the entry's site, no password
-    // field, no challenge, no error code. A blank or browser-error page is a
-    // failed login, never a success.
-    const ok = !afterProblem(after.url, CFG.site) && !after.hasPasswordField && !after.isCaptcha && !after.isVerify && !/errorcode=/.test(after.url);
+    // Success needs a positive signal: still on the entry's site, no challenge,
+    // no error code, and either no password field or a visible logout link
+    // (which overrides a stray password form such as account settings).
+    const ok = judgedLoggedIn(after);
     writeState({ ok, status: ok ? 'logged_in' : 'login_failed', after });
     console.log(JSON.stringify({ ok, status: ok ? 'logged_in' : 'login_failed', beforeUrl: sanitizeUrl(fillResult.beforeUrl), after: pubAfter(after) }));
     return;
@@ -597,7 +645,7 @@ try {
     console.log(JSON.stringify({ ok: false, status: 'captcha', space: CFG.spaceName, screenshot: CFG.shotPath, beforeUrl: sanitizeUrl(fillResult.beforeUrl), after: pubAfter(after) }));
     return;
   }
-  const ok = !afterProblem(after.url, CFG.site) && !after.hasPasswordField && !/errorcode=/.test(after.url);
+  const ok = judgedLoggedIn(after);
   writeState({ ok, status: ok ? 'logged_in' : 'login_failed', after });
   console.log(JSON.stringify({ ok, status: ok ? 'logged_in' : 'login_failed', beforeUrl: sanitizeUrl(fillResult.beforeUrl), after: pubAfter(after) }));
 } finally {

@@ -10,6 +10,9 @@
 #     refused as origin_mismatch before anything is opened
 #   * a symlink at --state-file / --wait-answer-file is refused
 #   * right credentials -> status=logged_in; wrong ones -> login_failed
+#   * a dashboard that still carries an off-canvas/faded login panel is a
+#     success, not login_failed — and a slow POST is waited for, not judged
+#     at one fixed instant
 #   * a submit that lands on another host -> origin_mismatch, not "success"
 #   * the --wait-answer-file bridge drives a CAPTCHA step to completion
 #   * the password and the URL query never appear in stdout or the state file,
@@ -151,6 +154,26 @@ else
     ok query-stripped "URL query dropped from output and state"
   else
     no query-stripped "the token appeared in output/state"
+  fi
+
+  # --- a dashboard that also carries a parked / faded login panel ----------
+  # Regression: input[type=password] existed (off-canvas, opacity:0), so a
+  # signed-in dashboard was reported as login_failed.
+  run_login "$BASE/login-parked" 127.0.0.1 --state-file "$T/parked.json"
+  if [ "$RC" -eq 0 ] && has "$OUT" '"status":"logged_in"'; then
+    ok parked-login "dashboard with hidden login panel -> logged_in"
+  else
+    no parked-login "rc=$RC out=$(printf '%s' "$OUT" | head -c 400)"
+  fi
+
+  # --- a slow POST (regression: fixed 4.5s judgement) ---------------------
+  # The form is still on screen at 4.5s while the server authenticates; the
+  # runner must keep watching instead of declaring login_failed.
+  run_login "$BASE/login-slow" 127.0.0.1
+  if [ "$RC" -eq 0 ] && has "$OUT" '"status":"logged_in"'; then
+    ok slow-login "slow POST -> waited, then logged_in"
+  else
+    no slow-login "rc=$RC out=$(printf '%s' "$OUT" | head -c 400)"
   fi
 
   # --- wrong password ------------------------------------------------------

@@ -5,7 +5,7 @@
 #   bash tests/run-tests.sh detect chain    # named suites only
 #
 # Suites: detect routecache chain bootstrap guard leak features selftest
-#         doctor intake detectfail vaultlogin
+#         doctor intake detectfail vaultlogin planguard
 # Each suite prints its own PASS/FAIL lines; this runner adds one summary line
 # per suite and a total. Exit 0 only when no suite failed.
 set -uo pipefail
@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TREE="$(dirname "$HERE")"
 . "$TREE/bin/pu-config.sh"
 
-ALL="detect routecache chain bootstrap guard leak features selftest doctor intake-file intake detectfail vaultlogin"
+ALL="detect routecache chain bootstrap guard leak features selftest doctor intake-file intake detectfail vaultlogin planguard"
 if [ $# -eq 0 ] || [ "$1" = "all" ]; then set -- $ALL; fi
 
 run_suite() { # name -> prints "SUITE name PASS=n FAIL=n SKIP=n rc="
@@ -38,6 +38,7 @@ run_suite() { # name -> prints "SUITE name PASS=n FAIL=n SKIP=n rc="
     intake-file) out=$(bash "$HERE/test-intake-file.sh" 2>&1); rc=$? ;;
     detectfail) out=$(bash "$HERE/test-detect-failure.sh" 2>&1); rc=$? ;;
     vaultlogin) out=$(bash "$HERE/test-vault-login.sh" 2>&1); rc=$? ;;
+    planguard) out=$(bash "$HERE/plan-guards.sh" 2>&1); rc=$? ;;
     *) echo "unknown suite: $name" >&2; return 2 ;;
   esac
   # unittest prints "Ran 26 tests ... OK"; the bash suites print "name: PASS=n FAIL=n [SKIP=n]"

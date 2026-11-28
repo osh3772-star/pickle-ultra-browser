@@ -115,6 +115,62 @@ The intake bundles still use this tree's `agent-vault/vault.py`, `gog` and `.sh`
 | `F-SELECTOR` | the ref or CSS selector matched nothing | `none` |
 | `F-DETECT` | the verdict engine failed (crash, empty or invalid JSON, unknown code) | `none` (report it; the page was not judged) |
 
+## Plan Replay (site skills)
+
+A **site skill** is a small folder that teaches the runner one site without
+teaching it in code:
+
+```
+skills/example.test/
+  skill.json       what may be touched: origins, scope.paths allowlist,
+                   riskClass=READ_ONLY, auth{loginUrl, sessionSignal, selectors}
+  plan.json        what to do: steps[], parameters, postconditions
+  extractors.mjs   how to read a page: export const page = (html, ctx) => ({...})
+```
+
+```
+node bin/plan-replay.mjs --list
+node bin/plan-replay.mjs example.test --out /tmp/example.json
+```
+
+The plan is validated as a whole **before Chrome is opened**: every step URL
+must be the plan's `origin` (equal to `skill.origins[0]`), its path must be in
+`skill.scope.paths`, the method must be GET, and both `riskClass` values must be
+`READ_ONLY`. A plan outside that envelope is refused with `precondition_failed`
+and a reason (`cross_origin`, `path_not_allowlisted`, `risk_class_not_read_only`,
+…), exit 1.
+
+Only three ops exist:
+
+| op | what it does |
+|---|---|
+| `goto` | navigates the shared tab and checks the landing origin |
+| `auth_check` | tests `skill.auth.sessionSignal` on `/` fetched with the session; when absent, runs `bin/vault-login.mjs` as a child and re-checks (values never reach the runner) |
+| `fetch_extract` | fetches each target URL inside the page (parallel, `concurrency`, default 4) and returns `extractor(html, ctx)` |
+
+A `goto` step must come before the first `fetch_extract`: the fetches run in that
+tab's session, so the tab has to be on the origin already (the gate reports
+`fetch_without_prior_goto` otherwise).
+
+`plan.parameters` values can be bound into step URLs as `{name}`. A step with
+`"foreach": "<key>"` repeats once per item of an array parameter and binds that
+item's fields (and `{id}`); the item id labels its result. Supported
+postconditions: `all_steps_ok`, `session_alive`, `no_secret_output`.
+
+Output is one JSON line:
+
+```
+{ ok, plan{id,skill,origin,risk}, asOf, session{reused,login,loginMs},
+  steps[{id,op,ms,…}], results{<stepId>:[{id,status,finalUrl,bytes,data,err}]},
+  summary{steps,targets,okTargets,htmlBytes}, postconditions[],
+  metrics{elapsedMs,outputBytes,toolCalls:1,…} }
+```
+
+`--max-bytes` (default 256 KiB) drops the extracted payloads, keeping the shape,
+when the result would be larger. `--no-login` refuses to fill anything and
+fails if the session is absent. The suite `bash tests/plan-guards.sh` proves the
+gate without a browser; `tests/run-tests.sh planguard` runs it with the rest.
+
 ## Credential vault
 
 `agent-vault/vault.py` keeps values **Fernet-encrypted** at rest
@@ -161,7 +217,8 @@ overridable with `PU_CONFIG_DIR`):
 ```
 bin/          run.sh chain.sh fetch.sh detect-page.py detect-code.sh doctor.sh selftest.sh
               cdp-daemon.mjs cdp-client.mjs snaptrim.py html2text.py routecache.py
-              vault-match.py batch.sh chrome-wrapper.sh pu-config.sh pu-config.mjs idle-stop.sh
+              vault-login.mjs plan-replay.mjs vault-match.py batch.sh chrome-wrapper.sh
+              pu-config.sh pu-config.mjs idle-stop.sh
 tests/        HTTP fixture server, fixture pages and the suites (run-tests.sh runs them all)
 agent-vault/  vault.py (encrypted store; keys/ and entries/ are gitignored)
 extensions/   vault-intake/  optional: automatic intake (Sheet or file), + selftest-intake.sh
@@ -209,6 +266,9 @@ Install configuration (sheet id, agent name) lives in
   흐르며 출력·로그·대화에 남지 않습니다. 삭제는 `delete`, 교체는 `store --force`.
 - **인입(선택 플러그인)**: `extensions/vault-intake/`가 비공개 구글 시트(또는 연동이 없으면 파일 왕복)로
   비밀번호만 받아 볼트에 넣고 원본을 지웁니다 — 자세한 것은 플러그인 README.
+- **자동화**: `bin/plan-replay.mjs`가 사이트 스킬(`skills/<host>/skill.json` + `plan.json` +
+  `extractors.mjs`)을 읽어, **브라우저를 열기 전에** Origin·경로·읽기전용을 검사하고 한 세션에서
+  순서대로 재생합니다. 로그인은 `vault-login.mjs` 자식 프로세스 몫이라 값이 실행기로 오지 않습니다.
 - **한계**: 데이터센터 IP라 Cloudflare Managed Challenge는 통과하지 못합니다(정상 동작입니다).
 
 설치·검증 절차는 [INSTALL.md](INSTALL.md), 설치 직후 사용자에게 할 고지는
